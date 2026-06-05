@@ -24,6 +24,24 @@ def resource_dir():
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
+
+def virtual_screen():
+    """모든 모니터를 합친 '가상 화면' 영역 (left, top, width, height).
+    윈도우 멀티모니터 지원 — 보조 모니터가 오른쪽/왼쪽/위/아래 어디든(좌표 음수 가능) 포함.
+    실패하면(다른 OS 등) None."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        x = u.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+        y = u.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+        w = u.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+        h = u.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+        if w > 0 and h > 0:
+            return x, y, w, h
+    except Exception:
+        pass
+    return None
+
 DARK   = "#46301F"   # 말풍선 테두리/글자
 SHADOW = "#4E3826"   # 바닥 그림자
 
@@ -66,12 +84,18 @@ class Pet:
         self.cx_off = self.W / 2
         self.cy_off = self.base_top + self.fh * 0.33
 
-        self.sw = self.root.winfo_screenwidth()
-        self.sh = self.root.winfo_screenheight()
+        # 주 모니터 크기(시작 위치용) + 전체 가상 화면(모든 모니터, 이동 범위용)
+        self.pw = self.root.winfo_screenwidth()
+        self.ph = self.root.winfo_screenheight()
+        vs = virtual_screen()
+        if vs:
+            self.vx, self.vy, self.vw, self.vh = vs
+        else:
+            self.vx, self.vy, self.vw, self.vh = 0, 0, self.pw, self.ph
 
-        # 시작 위치: 우하단
-        self.x = float(self.sw - self.W - 120)
-        self.y = float(self.sh - self.H - 120)
+        # 시작 위치: 주 모니터 우하단
+        self.x = float(self.pw - self.W - 120)
+        self.y = float(self.ph - self.H - 120)
         self.root.geometry(f"{self.W}x{self.H}+{int(self.x)}+{int(self.y)}")
 
         self.canvas = tk.Canvas(self.root, width=self.W, height=self.H,
@@ -199,8 +223,9 @@ class Pet:
             self.x += self.vx
             self.y += self.vy
 
-            self.x = max(-30, min(self.sw - self.W + 30, self.x))
-            self.y = max(0, min(self.sh - self.H, self.y))
+            # 전체 가상 화면(모든 모니터) 범위로 제한 — 모니터 2·3번까지 따라감
+            self.x = max(self.vx - 30, min(self.vx + self.vw - self.W + 30, self.x))
+            self.y = max(self.vy, min(self.vy + self.vh - self.H, self.y))
             self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
 
         # 점프 물리
