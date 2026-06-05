@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-데스크탑 펫 (Desktop Pet) - 마우스에 반응하는 나무늘보
-- 캐릭터: 바탕화면 그림을 가공한 애니메이션 프레임(frames/pet_*.png) 사용
-  · 팔다리가 팔랑팔랑 흔들림(미리 렌더한 프레임을 번갈아 표시)
-- 마우스가 멀면 호기심에 다가오고, 너무 가까우면 깜짝 놀라 도망감
-- 둥실둥실 / 클릭하면 좋아서 폴짝 / 드래그로 이동 / 우클릭으로 종료
-- 가끔 혼잣말 말풍선. 실행 시 외부 패키지 불필요(프레임은 build_frames.py로 미리 생성).
+데스크탑 펫 (Desktop Pet) - 나무늘보
+- 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
+- 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
+- Ctrl 키를 누르고 있으면: 마우스를 따라옴 (모니터 2·3번까지)
+- 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
+- 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
+- 클릭하면 좋아서 폴짝 / 드래그로 이동 / 우클릭으로 종료
+- 실행 시 외부 패키지 불필요(프레임은 build_frames.py로 미리 생성).
 """
 import tkinter as tk
 import math
@@ -13,9 +15,21 @@ import random
 import os
 import sys
 import glob
+import time
+import atexit
+import tempfile
 
 TRANSPARENT = "magenta"   # 이 색은 화면에서 투명 처리됨 (프레임 배경색)
 FRAME_DIR = "frames"
+
+
+def ctrl_pressed():
+    """Ctrl 키가 눌려있는지(창 포커스 무관 전역 감지). 윈도우 전용, 실패 시 False."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)  # VK_CONTROL
+    except Exception:
+        return False
 
 
 def resource_dir():
@@ -75,27 +89,35 @@ class Pet:
         self.fh = any_frames[0].height()
         self.fphase = 0.0
 
-        # 창 크기: 프레임 + 위쪽 말풍선 공간
-        self.W = self.fw
-        self.H = self.fh + 44
+        # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
+        self.W = max(self.fw, 360)
+        self.H = self.fh + 58
         self.base_top = self.H - self.fh             # 프레임 상단 y(기본)
 
-        # 충돌/반응 기준점: 얼굴 부근
+        # 충돌/반응 기준점: 얼굴 부근(창 가운데 = 캐릭터 가운데)
         self.cx_off = self.W / 2
         self.cy_off = self.base_top + self.fh * 0.33
 
-        # 주 모니터 크기(시작 위치용) + 전체 가상 화면(모든 모니터, 이동 범위용)
+        # 주 모니터(시작 참고) + 전체 가상 화면(모든 모니터) — vsx/vsy/vsw/vsh (속도 vx/vy와 이름 분리!)
         self.pw = self.root.winfo_screenwidth()
         self.ph = self.root.winfo_screenheight()
         vs = virtual_screen()
         if vs:
-            self.vx, self.vy, self.vw, self.vh = vs
+            self.vsx, self.vsy, self.vsw, self.vsh = vs
         else:
-            self.vx, self.vy, self.vw, self.vh = 0, 0, self.pw, self.ph
+            self.vsx, self.vsy, self.vsw, self.vsh = 0, 0, self.pw, self.ph
 
-        # 시작 위치: 주 모니터 우하단
-        self.x = float(self.pw - self.W - 120)
-        self.y = float(self.ph - self.H - 120)
+        # 중복 실행 인스턴스끼리 위치를 공유(겹침 방지). temp 폴더에 pid별 파일.
+        self.pid = os.getpid()
+        self.share_dir = os.path.join(tempfile.gettempdir(), "desktop_sloth_pets")
+        try:
+            os.makedirs(self.share_dir, exist_ok=True)
+        except Exception:
+            self.share_dir = None
+        atexit.register(self._unregister)
+
+        # 시작 위치: 다른 펫과 안 겹치게 랜덤 배치
+        self.x, self.y = self._pick_spawn()
         self.root.geometry(f"{self.W}x{self.H}+{int(self.x)}+{int(self.y)}")
 
         self.canvas = tk.Canvas(self.root, width=self.W, height=self.H,
@@ -104,12 +126,18 @@ class Pet:
 
         # 상태값
         self.t = 0
-        self.vx = 0.0
+        self.vx = 0.0               # 속도(virtual screen vsx/vsy 와 다름!)
         self.vy = 0.0
         self.mood = "idle"          # idle / curious / startled / happy
         self.mood_timer = 0
         self.hop = 0.0              # 점프 높이(위로 갈수록 음수)
         self.hop_v = 0.0
+
+        # 이동 모드: Ctrl 누르면 마우스 따라오기, 평소엔 랜덤 배회
+        self.follow_mode = False
+        self.wtx = None             # 배회 목표점
+        self.wty = None
+        self.wtimer = 0
 
         # 말풍선
         self.say_text = ""
@@ -131,15 +159,21 @@ class Pet:
 
         self.loop()
         self.root.mainloop()
+        self._unregister()          # 종료 시 위치 공유 파일 정리
 
-    # ---------- 대사 ----------
+    # ---------- 대사 (힘이 나는 좋은 말만!) ----------
     LINES = {
-        "idle": ["심심해~", "오늘 날씨 좋다", "흠흠~", "뭐 하고 있어?",
-                 "졸려...", "같이 놀자!", "히히", "딴짓 그만! ...농담이야",
-                 "물 마셨어?", "잠깐 쉬어가자~"],
-        "happy": ["헤헤 좋아!", "또 해줘!", "신난다!", "야호~"],
-        "startled": ["으악!", "깜짝이야!", "너무 가까워!", "헉!"],
-        "curious": ["어디 가?", "기다려~", "같이 가!", "응?"],
+        "idle": ["오늘도 잘하고 있어!", "넌 충분히 멋져!", "조금씩 가면 돼",
+                 "넌 할 수 있어!", "지금도 충분히 잘하고 있어", "거의 다 왔어!",
+                 "네 속도대로 가면 돼", "실수해도 괜찮아", "넌 생각보다 강해",
+                 "오늘 하루도 수고했어", "잠깐 쉬어도 괜찮아", "넌 소중한 사람이야",
+                 "좋은 일이 생길 거야", "깊게 숨 한 번, 후~", "잘 견뎌왔어, 대단해"],
+        "happy": ["야호! 신난다!", "너랑 있으면 좋아!", "우리 최고야!",
+                  "헤헤 행복해~", "넌 정말 멋져!"],
+        "startled": ["우와, 반가워!", "히히 깜짝, 좋아!", "너라서 더 좋아!",
+                     "꺄 행복해~"],
+        "curious": ["같이 가자!", "내가 함께할게!", "어디든 따라갈게!",
+                    "곁에 있어 줄게~", "넌 혼자가 아니야!"],
     }
 
     def say(self, mood=None, text=None):
@@ -187,45 +221,50 @@ class Pet:
     # ---------- 메인 루프 ----------
     def loop(self):
         self.t += 1
-        px = self.root.winfo_pointerx()
-        py = self.root.winfo_pointery()
-
-        cx = self.x + self.cx_off
-        cy = self.y + self.cy_off
-        dx = px - cx
-        dy = py - cy
-        dist = math.hypot(dx, dy)
+        self.follow_mode = (not self.dragging) and ctrl_pressed()
 
         if not self.dragging:
-            personal = 95
-            follow = 280
+            if self.follow_mode:
+                # Ctrl 누름: 마우스를 따라옴 (가까우면 반가워서 폴짝, 멀면 쫓아감)
+                px = self.root.winfo_pointerx()
+                py = self.root.winfo_pointery()
+                cx = self.x + self.cx_off
+                cy = self.y + self.cy_off
+                dx, dy = px - cx, py - cy
+                dist = math.hypot(dx, dy)
+                personal, follow = 90, 200
+                if dist < personal:
+                    self.set_mood("startled")
+                    if self.hop == 0 and self.hop_v == 0:
+                        self.hop_v = -6
+                elif dist > follow:
+                    self.set_mood("curious")
+                    self.vx += dx / dist * 0.55
+                    self.vy += dy / dist * 0.55
+                elif self.mood not in ("happy",) and self.mood_timer == 0:
+                    self.set_mood("idle")
+            else:
+                # 평소: 화면을 랜덤으로 느긋하게 배회
+                self._wander()
 
-            if dist < personal:
-                self.set_mood("startled")
-                if dist > 1:
-                    self.vx += -dx / dist * 1.4
-                    self.vy += -dy / dist * 1.4
-                if self.hop == 0 and self.hop_v == 0:
-                    self.hop_v = -6
-            elif dist > follow:
-                self.set_mood("curious")
-                self.vx += dx / dist * 0.45
-                self.vy += dy / dist * 0.45
-            elif self.mood not in ("happy",) and self.mood_timer == 0:
-                self.set_mood("idle")
+            # 다른 펫과 안 겹치게 서로 밀어내기(두 모드 공통)
+            sx, sy = self._separation()
+            self.vx += sx
+            self.vy += sy
 
             self.vx *= 0.85
             self.vy *= 0.85
+            cap = 9.0 if self.follow_mode else 3.2   # 따라올 땐 빠르게, 배회는 느긋
             sp = math.hypot(self.vx, self.vy)
-            if sp > 9:
-                self.vx, self.vy = self.vx / sp * 9, self.vy / sp * 9
+            if sp > cap:
+                self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
 
             self.x += self.vx
             self.y += self.vy
 
-            # 전체 가상 화면(모든 모니터) 범위로 제한 — 모니터 2·3번까지 따라감
-            self.x = max(self.vx - 30, min(self.vx + self.vw - self.W + 30, self.x))
-            self.y = max(self.vy, min(self.vy + self.vh - self.H, self.y))
+            # 전체 가상 화면(모든 모니터) 범위로 제한 — 모니터 2·3번까지 이동
+            self.x = max(self.vsx - 30, min(self.vsx + self.vsw - self.W + 30, self.x))
+            self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
             self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
 
         # 점프 물리
@@ -258,8 +297,128 @@ class Pet:
             energy = max(energy, 0.7)
         self.fphase += 0.25 + energy * 0.85
 
+        self._write_share()         # 내 위치를 다른 펫에게 알림(겹침 방지용)
         self.draw()
         self.root.after(33, self.loop)
+
+    # ---------- 배회 / 겹침 방지 (중복 실행 인스턴스 간 위치 공유) ----------
+    def _share_path(self):
+        return os.path.join(self.share_dir, f"{self.pid}.txt")
+
+    def _write_share(self):
+        if not self.share_dir:
+            return
+        cx = self.x + self.cx_off
+        cy = self.y + self.cy_off
+        try:
+            with open(self._share_path(), "w") as f:
+                f.write(f"{cx} {cy} {self.W} {self.H}")
+        except Exception:
+            pass
+
+    def _unregister(self):
+        try:
+            if self.share_dir:
+                os.remove(self._share_path())
+        except Exception:
+            pass
+
+    def _siblings(self):
+        """다른 살아있는 펫들의 (중심x, 중심y, 폭, 높이) 목록."""
+        out = []
+        if not self.share_dir:
+            return out
+        now = time.time()
+        try:
+            files = os.listdir(self.share_dir)
+        except Exception:
+            return out
+        for fn in files:
+            if not fn.endswith(".txt") or fn == f"{self.pid}.txt":
+                continue
+            p = os.path.join(self.share_dir, fn)
+            try:
+                if now - os.path.getmtime(p) > 2.5:   # 멈춘(죽은) 인스턴스는 무시+정리
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+                    continue
+                with open(p) as f:
+                    a = f.read().split()
+                out.append((float(a[0]), float(a[1]), float(a[2]), float(a[3])))
+            except Exception:
+                continue
+        return out
+
+    def _separation(self):
+        """겹치거나 너무 가까운 다른 펫에게서 멀어지는 힘."""
+        ax = ay = 0.0
+        mcx = self.x + self.cx_off
+        mcy = self.y + self.cy_off
+        for (sx, sy, sw, sh) in self._siblings():
+            dx, dy = mcx - sx, mcy - sy
+            d = math.hypot(dx, dy)
+            rng = (self.fw + sw * 0.4) * 0.7        # 몸이 겹칠 만한 거리
+            if d < 0.5:
+                ax += random.uniform(-1.0, 1.0); ay += random.uniform(-1.0, 1.0)
+            elif d < rng:
+                f = (rng - d) / rng * 1.8
+                ax += dx / d * f; ay += dy / d * f
+        return ax, ay
+
+    def _pick_spawn(self):
+        """다른 펫과 안 겹치는 랜덤 시작 위치."""
+        pad = 24
+        x0, x1 = self.vsx + pad, self.vsx + self.vsw - self.W - pad
+        y0, y1 = self.vsy + pad, self.vsy + self.vsh - self.H - pad
+        if x1 < x0:
+            x1 = x0
+        if y1 < y0:
+            y1 = y0
+        sibs = self._siblings()
+        best, bestmin = (x0, y0), -1.0
+        for _ in range(80):
+            x = random.uniform(x0, x1)
+            y = random.uniform(y0, y1)
+            if not sibs:
+                return x, y
+            cx, cy = x + self.cx_off, y + self.cy_off
+            mind = min(math.hypot(cx - sx, cy - sy) for (sx, sy, sw, sh) in sibs)
+            if mind > self.fw * 1.1:                # 충분히 떨어졌으면 채택
+                return x, y
+            if mind > bestmin:
+                bestmin, best = mind, (x, y)
+        return best
+
+    def _wander(self):
+        """화면을 느긋하게 랜덤 배회(가끔 멈춰 쉼)."""
+        if self.wtimer <= 0:
+            if random.random() < 0.25:
+                self.wtx = self.wty = None          # 잠깐 쉼
+                self.wtimer = random.randint(40, 90)
+            else:
+                pad = 24
+                self.wtx = random.uniform(self.vsx + pad, self.vsx + self.vsw - self.W - pad)
+                self.wty = random.uniform(self.vsy + pad, self.vsy + self.vsh - self.H - pad)
+                self.wtimer = random.randint(80, 170)
+        self.wtimer -= 1
+
+        if self.wtx is None:
+            if self.mood not in ("happy",) and self.mood_timer == 0:
+                self.set_mood("idle")
+            return
+        dx, dy = self.wtx - self.x, self.wty - self.y
+        d = math.hypot(dx, dy)
+        if d < 8:
+            self.wtimer = 0                          # 도착 -> 다음 목표
+            if self.mood not in ("happy",) and self.mood_timer == 0:
+                self.set_mood("idle")
+        else:
+            self.vx += dx / d * 0.30
+            self.vy += dy / d * 0.30
+            if self.mood not in ("happy",) and self.mood_timer == 0:
+                self.set_mood("curious")
 
     # ---------- 그리기 ----------
     def draw(self):
@@ -288,7 +447,10 @@ class Pet:
             self.draw_bubble(c, scx, top + self.fh * 0.16)
 
     def draw_bubble(self, c, scx, y_anchor):
+        # 창 폭 안에서 자동 줄바꿈 -> 긴 글도 안 잘림
+        maxw = max(120, self.W - 40)
         txt = c.create_text(scx, -100, text=self.say_text, anchor="center",
+                            width=maxw, justify="center",
                             font=("맑은 고딕", 11, "bold"), fill=DARK)
         bb = c.bbox(txt)
         bw, bh = bb[2] - bb[0], bb[3] - bb[1]
