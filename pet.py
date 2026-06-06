@@ -132,6 +132,8 @@ class GiantSloth:
         self.wtimer = 0
         self.t = 0
         self.fphase = 0.0
+        self.hphase = 0.0
+        self.hug_timer = 0          # 클릭 시 팔벌리기 모션 남은 시간(슬로 틱)
         self.say_text = ""
         self.say_timer = 0
         self.say_cd = random.randint(60, 160)
@@ -158,15 +160,20 @@ class GiantSloth:
         self._relayout()
         self._draw()
 
-    # 현재 표시 이미지
+    # 현재 표시 이미지 (누움=숨쉬기, 서있음=깜빡, 클릭=팔벌리기)
     def _cur_img(self):
         if self.lying:
-            return self.app.giant_sleep
-        frames = self.app.giant_stand_frames
-        return frames[int(self.fphase) % len(frames)]
+            fr = self.app.giant_sleep_frames
+            return fr[int(self.fphase) % len(fr)]
+        if self.hug_timer > 0:
+            fr = self.app.giant_hug_frames
+            return fr[min(int(self.hphase), len(fr) - 1)]
+        fr = self.app.giant_stand_frames
+        return fr[int(self.fphase) % len(fr)]
 
     def _content_size(self):
-        img = self.app.giant_sleep if self.lying else self.app.giant_stand_frames[0]
+        # 누움=숨쉬기 프레임 크기 / 서있음=팔벌리기 프레임이 더 넓으니 그 크기로(가운데 정렬)
+        img = self.app.giant_sleep_frames[0] if self.lying else self.app.giant_hug_frames[0]
         return img.width(), img.height()
 
     def _relayout(self):
@@ -191,6 +198,7 @@ class GiantSloth:
         bx = self.x + self.win_w / 2          # 가로 중심
         by = self.y + self.win_h              # 바닥
         self.lying = not self.lying
+        self.hug_timer = 0
         self.say_text = ""
         self.say_timer = 0
         self.say_cd = random.randint(40, 120)
@@ -204,6 +212,11 @@ class GiantSloth:
         self.dragging = True
         self.grab_dx = self.win.winfo_pointerx() - self.x
         self.grab_dy = self.win.winfo_pointery() - self.y
+        if not self.lying:                  # 서 있을 때 클릭 -> 팔벌리기
+            self.hug_timer = 70
+            self.hphase = 0.0
+            self.say_text = random.choice(("안아줘~", "반가워!", "헤헤 좋아!"))
+            self.say_timer = 80
 
     def _drag(self, e):
         self.x = self.win.winfo_pointerx() - self.grab_dx
@@ -237,28 +250,26 @@ class GiantSloth:
 
     def _talk(self):
         if self.lying:
-            # 자는 중: 항상 Zzz (Z -> Zz -> Zzz 천천히 깜빡)
-            self.say_text = "Z" + "z" * ((self.t // 16) % 3)
+            self.say_text = "Z" + "z" * ((self.t // 8) % 3)   # Zzz 천천히
             self.say_timer = 2
+        elif self.say_timer > 0:
+            self.say_timer -= 1
         else:
-            if self.say_timer > 0:
-                self.say_timer -= 1
-            else:
-                self.say_cd -= 1
-                if self.say_cd <= 0:
-                    self.say_text = random.choice(GIANT_LINES)
-                    self.say_timer = 90
-                    self.say_cd = random.randint(140, 300)
+            self.say_cd -= 1
+            if self.say_cd <= 0:
+                self.say_text = random.choice(GIANT_LINES)
+                self.say_timer = 90
+                self.say_cd = random.randint(140, 300)
 
-    def update(self):
-        self.t += 1
-        self._talk()
-        if not self.dragging and not self.lying:
-            # 일어서 있을 때만 이동(일반 나무늘보처럼) + 깜빡 애니메이션
-            app = self.app
-            if app.frozen:
-                self.vx = self.vy = 0.0
-            else:
+    def update(self, slow):
+        app = self.app
+        if slow:
+            self.t += 1
+            self._talk()
+            if self.hug_timer > 0:
+                self.hug_timer -= 1
+            if not self.dragging and not self.lying and not app.frozen:
+                # 일어서 있을 때만 이동(일반 나무늘보처럼)
                 if app.follow_on:
                     px, py = app.root.winfo_pointerx(), app.root.winfo_pointery()
                     cx, cy = self.x + self.win_w / 2, self.y + self.win_h / 2
@@ -277,11 +288,17 @@ class GiantSloth:
                     self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
                 self.x += self.vx
                 self.y += self.vy
-            self.x = max(app.vsx - self.win_w * 0.25,
-                         min(app.vsx + app.vsw - self.win_w * 0.75, self.x))
-            self.y = max(app.vsy, min(app.vsy + app.vsh - self.win_h, self.y))
-            self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
-            self.fphase += 0.5            # 깜빡 애니메이션 진행
+                self.x = max(app.vsx - self.win_w * 0.25,
+                             min(app.vsx + app.vsw - self.win_w * 0.75, self.x))
+                self.y = max(app.vsy, min(app.vsy + app.vsh - self.win_h, self.y))
+                self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
+        # 애니메이션은 매 틱(60fps) 진행
+        if self.lying:
+            self.fphase += 0.22          # 세근세근 숨쉬기
+        elif self.hug_timer > 0:
+            self.hphase += 0.6           # 팔벌리기
+        else:
+            self.fphase += 0.5           # 깜빡
         self._draw()
 
 
@@ -298,7 +315,7 @@ class Pet:
         # 애니메이션 클립 로드 (기분별 60프레임). 각 프레임은 완성된 한 장.
         here = resource_dir()
         self.clips = {}
-        for name in ("idle", "happy", "startled", "curious"):
+        for name in ("idle", "happy", "startled", "curious", "hug"):
             cf = sorted(glob.glob(os.path.join(here, FRAME_DIR, f"{name}_*.png")))
             if cf:
                 self.clips[name] = [tk.PhotoImage(file=f) for f in cf]
@@ -320,9 +337,12 @@ class Pet:
                 return tk.PhotoImage(file=p) if os.path.exists(p) else fb
             except Exception:
                 return fb
-        self._gsleep_src = _load_png(os.path.join(here, FRAME_DIR, "giant_sleep.png"), any_frames[0])
-        self.giant_sleep = None          # 누운(자는) 모습 zoom 캐시
-        self.giant_stand_frames = None   # 서있는 애니메이션(idle 클립 zoom) 캐시
+        # 누운(세근세근 숨쉬는) 모션 소스 frames/sleep_*.png
+        self._sleep_srcs = [tk.PhotoImage(file=f) for f in
+                            sorted(glob.glob(os.path.join(here, FRAME_DIR, "sleep_*.png")))] or [any_frames[0]]
+        self.giant_sleep_frames = None   # 누운 숨쉬기 zoom 캐시
+        self.giant_stand_frames = None   # 서있는 깜빡 애니메이션(idle 클립 zoom) 캐시
+        self.giant_hug_frames = None     # 팔벌리기(hug 클립 zoom) 캐시
         self.giants = []                 # 소환된 거대 나무늘보(독립 창)들
 
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
@@ -361,10 +381,11 @@ class Pet:
         self.canvas.pack()
 
         # 상태값
-        self.t = 0
+        self.t = 0                  # 30fps 카운터(둥실 등)
+        self.tick = 0               # 60fps 루프 카운터
         self.vx = 0.0               # 속도(virtual screen vsx/vsy 와 다름!)
         self.vy = 0.0
-        self.mood = "idle"          # idle / curious / startled / happy
+        self.mood = "idle"          # idle / curious / startled / happy / hug
         self.mood_timer = 0
         self.hop = 0.0              # 점프 높이(위로 갈수록 음수)
         self.hop_v = 0.0
@@ -432,7 +453,7 @@ class Pet:
         self.dragging = True
         self.grab_dx = self.root.winfo_pointerx() - self.x
         self.grab_dy = self.root.winfo_pointery() - self.y
-        self.set_mood("happy", 30)
+        self.set_mood("hug", 46)        # 클릭 -> 팔벌리기 모션
         self.hop_v = -7
         self.say("happy")
 
@@ -452,7 +473,7 @@ class Pet:
     def set_mood(self, mood, timer=0):
         changed = (mood != self.mood)
         self.mood = mood
-        if changed and mood in ("happy", "startled") and mood in self.clips:
+        if changed and mood in ("happy", "startled", "hug") and mood in self.clips:
             self.fphase = 0.0          # 반응 클립은 처음부터 재생
         if timer:
             self.mood_timer = timer
@@ -462,93 +483,89 @@ class Pet:
             elif mood == "curious" and random.random() < 0.4:
                 self.say("curious")
 
-    # ---------- 메인 루프 ----------
+    # ---------- 메인 루프 (60fps: 애니메이션은 매 틱, 이동/물리는 30fps로 게이트) ----------
     def loop(self):
-        self.t += 1
+        self.tick += 1
+        slow = (self.tick % 2 == 0)   # 이동·물리·타이머는 30fps 유지(기존 감각 보존)
         self._handle_keys()
 
-        # 정지 중이거나 드래그 중이면 (메인 펫) 이동 로직 건너뜀
-        if not self.dragging and not self.frozen:
-            if self.follow_on:
-                # 따라오기 ON: 마우스를 따라옴 (가까우면 반가워서 폴짝, 멀면 쫓아감)
-                px = self.root.winfo_pointerx()
-                py = self.root.winfo_pointery()
-                cx = self.x + self.cx_off
-                cy = self.y + self.cy_off
-                dx, dy = px - cx, py - cy
-                dist = math.hypot(dx, dy)
-                personal, follow = 90, 200
-                if dist < personal:
-                    self.set_mood("startled")
-                    if self.hop == 0 and self.hop_v == 0:
-                        self.hop_v = -6
-                elif dist > follow:
-                    self.set_mood("curious")
-                    self.vx += dx / dist * 0.55
-                    self.vy += dy / dist * 0.55
-                elif self.mood not in ("happy",) and self.mood_timer == 0:
-                    self.set_mood("idle")
+        if slow:
+            self.t += 1
+            # 정지 중이거나 드래그 중이면 (메인 펫) 이동 로직 건너뜀
+            if not self.dragging and not self.frozen:
+                if self.follow_on:
+                    px = self.root.winfo_pointerx()
+                    py = self.root.winfo_pointery()
+                    cx = self.x + self.cx_off
+                    cy = self.y + self.cy_off
+                    dx, dy = px - cx, py - cy
+                    dist = math.hypot(dx, dy)
+                    personal, follow = 90, 200
+                    if dist < personal:
+                        self.set_mood("startled")
+                        if self.hop == 0 and self.hop_v == 0:
+                            self.hop_v = -6
+                    elif dist > follow:
+                        self.set_mood("curious")
+                        self.vx += dx / dist * 0.55
+                        self.vy += dy / dist * 0.55
+                    elif self.mood not in ("happy", "hug") and self.mood_timer == 0:
+                        self.set_mood("idle")
+                else:
+                    self._wander()
+
+                sx, sy = self._separation()
+                self.vx += sx
+                self.vy += sy
+                self.vx *= 0.85
+                self.vy *= 0.85
+                cap = 9.0 if self.follow_on else 3.2
+                sp = math.hypot(self.vx, self.vy)
+                if sp > cap:
+                    self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
+                self.x += self.vx
+                self.y += self.vy
+                self.x = max(self.vsx - 30, min(self.vsx + self.vsw - self.W + 30, self.x))
+                self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
+                self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
+
+            # 점프 물리
+            if self.hop_v != 0 or self.hop != 0:
+                self.hop += self.hop_v
+                self.hop_v += 1.1
+                if self.hop >= 0:
+                    self.hop = 0.0
+                    self.hop_v = 0.0
+
+            if self.mood_timer > 0:
+                self.mood_timer -= 1
+
+            # 말풍선 타이머 + 가끔 혼잣말
+            if self.say_timer > 0:
+                self.say_timer -= 1
             else:
-                # 따라오기 OFF: 화면을 랜덤으로 느긋하게 배회
-                self._wander()
+                self.say_cooldown -= 1
+                if self.say_cooldown <= 0 and self.mood in ("idle", "curious"):
+                    self.say("idle")
+            self._write_share()
 
-            # 다른 펫과 안 겹치게 서로 밀어내기(두 모드 공통)
-            sx, sy = self._separation()
-            self.vx += sx
-            self.vy += sy
-
-            self.vx *= 0.85
-            self.vy *= 0.85
-            cap = 9.0 if self.follow_on else 3.2   # 따라올 땐 빠르게, 배회는 느긋
-            sp = math.hypot(self.vx, self.vy)
-            if sp > cap:
-                self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
-
-            self.x += self.vx
-            self.y += self.vy
-
-            # 전체 가상 화면(모든 모니터) 범위로 제한 — 모니터 2·3번까지 이동
-            self.x = max(self.vsx - 30, min(self.vsx + self.vsw - self.W + 30, self.x))
-            self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
-            self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
-
-        # 점프 물리
-        if self.hop_v != 0 or self.hop != 0:
-            self.hop += self.hop_v
-            self.hop_v += 1.1
-            if self.hop >= 0:
-                self.hop = 0.0
-                self.hop_v = 0.0
-
-        if self.mood_timer > 0:
-            self.mood_timer -= 1
-
-        # 말풍선 타이머 + 가끔 혼잣말
-        if self.say_timer > 0:
-            self.say_timer -= 1
-        else:
-            self.say_cooldown -= 1
-            if self.say_cooldown <= 0 and self.mood in ("idle", "curious"):
-                self.say("idle")
-
-        # 팔다리 흔들림 속도(에너지에 비례) -> 프레임 진행
+        # 클립 프레임 진행(매 틱, 절반 속도 -> 같은 속도지만 60fps로 부드럽게)
         speed = math.hypot(self.vx, self.vy)
         energy = min(1.0, speed / 6.0)
         if self.mood == "startled":
             energy = max(energy, 1.0)
         elif self.mood == "curious":
             energy = max(energy, 0.55)
-        elif self.mood == "happy":
+        elif self.mood in ("happy", "hug"):
             energy = max(energy, 0.7)
-        self.fphase += 0.25 + energy * 0.85
+        self.fphase += 0.125 + energy * 0.425
 
-        # 거대 나무늘보(독립 창)들도 같은 커맨드(따라오기/정지)로 움직임
+        # 거대 나무늘보(독립 창)들 — 애니메이션 매 틱, 이동은 slow
         for g in list(self.giants):
-            g.update()
+            g.update(slow)
 
-        self._write_share()         # 내 위치를 다른 펫에게 알림(겹침 방지용)
         self.draw()
-        self.root.after(33, self.loop)
+        self.root.after(16, self.loop)
 
     # ---------- 배회 / 겹침 방지 (중복 실행 인스턴스 간 위치 공유) ----------
     def _share_path(self):
@@ -713,21 +730,22 @@ class Pet:
         self._p_ctrl, self._p_k1, self._p_k0 = ctrl, k1, k0
 
     # ---------- 거대 나무늘보 (독립 창, 공존·중복 소환) ----------
-    def _ensure_giant_imgs(self):
-        if self.giant_sleep is None:
+    def _zoom_all(self, frames):
+        out = []
+        for f in frames:
             try:
-                self.giant_sleep = self._gsleep_src.zoom(GIANT_SCALE)
+                out.append(f.zoom(GIANT_SCALE))
             except Exception:
-                self.giant_sleep = self._gsleep_src
+                out.append(f)
+        return out
+
+    def _ensure_giant_imgs(self):
+        if self.giant_sleep_frames is None:
+            self.giant_sleep_frames = self._zoom_all(self._sleep_srcs)
         if self.giant_stand_frames is None:
-            base = self.clips.get("idle") or next(iter(self.clips.values()))
-            out = []
-            for f in base:
-                try:
-                    out.append(f.zoom(GIANT_SCALE))
-                except Exception:
-                    out.append(f)
-            self.giant_stand_frames = out
+            self.giant_stand_frames = self._zoom_all(self.clips.get("idle") or next(iter(self.clips.values())))
+        if self.giant_hug_frames is None:
+            self.giant_hug_frames = self._zoom_all(self.clips.get("hug") or self.giant_stand_frames)
 
     def summon_giant(self):
         if len(self.giants) >= GIANT_CAP:
@@ -768,7 +786,10 @@ class Pet:
         # 현재 기분에 맞는 클립의 프레임
         clip = self.mood if self.mood in self.clips else "idle"
         frames = self.clips[clip]
-        idx = int(self.fphase) % len(frames)
+        if clip == "hug":
+            idx = min(int(self.fphase), len(frames) - 1)   # 한 번 펴고 활짝 유지(루프X)
+        else:
+            idx = int(self.fphase) % len(frames)
         c.create_image(scx, top, image=frames[idx], anchor="n")
 
         # 말풍선

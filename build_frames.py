@@ -12,13 +12,23 @@ from collections import deque
 from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# 원본 그림: 프로젝트 폴더의 나무늘보.png 우선, 없으면 바탕화면(OneDrive) 경로
-_LOCAL_SRC = os.path.join(HERE, "나무늘보.png")
-SRC = _LOCAL_SRC if os.path.exists(_LOCAL_SRC) else r"C:\Users\user\OneDrive\바탕 화면\나무늘보.png"
+
+
+def _src(local_name, onedrive_name):
+    p = os.path.join(HERE, local_name)
+    return p if os.path.exists(p) else os.path.join(r"C:\Users\user\OneDrive\바탕 화면", onedrive_name)
+
+
+# 원본 그림(프로젝트 폴더 우선, 없으면 바탕화면)
+SRC = _src("나무늘보.png", "나무늘보.png")            # 서있는 기본
+SRC_SLEEP = _src("누운늘보.png", "누운늘보.png")        # 누워 자는 모습
+SRC_HUG = _src("팔벌려늘보.png", "팔벌려 늘보.png")     # 팔 벌린 모습
 OUTDIR = os.path.join(HERE, "frames")
 MAG = (255, 0, 255)
 TARGET_H = 150
 N = 60                       # 클립당 프레임 수
+N_SLEEP = 60                 # 누운 숨쉬기 한 주기 프레임 수
+N_HUG = 30                   # 팔 벌리기 모션 프레임 수
 TM, SM, BM = 30, 26, 8       # 위/옆/아래 여백(변형 시 잘림 방지)
 
 
@@ -200,36 +210,72 @@ def blink_at(center):
     return {center - 2 + i: seq[i] for i in range(5)}
 
 
-def make_sleeping():
-    """거대 나무늘보가 누운(엎드려 팔베개·눈감고 자는) 모습 — RGBA 직접 드로잉."""
-    BODY = (188, 144, 105); BELLY = (236, 199, 159); FACE = (247, 224, 190)
-    PATCH = (170, 128, 92); OUT = (92, 62, 40); NOSE = (74, 50, 34)
-    CLAW = (250, 236, 208); GRN = (142, 198, 60); GRN2 = (96, 150, 52)
-    W, H = 190, 124
-    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
+def _flatten_to(out_rgba):
+    """RGBA -> 마젠타 평탄화 RGB."""
+    w, h = out_rgba.size
+    px = out_rgba.load()
+    flat = Image.new("RGB", (w, h), MAG)
+    fp = flat.load()
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a >= 128:
+                fp[x, y] = (r, g, b)
+    return flat
 
-    def lobe(box, fill, w=3):
-        d.ellipse(box, fill=fill, outline=OUT, width=w)
 
-    lobe((58, 30, 182, 104), BODY)                 # 등(몸통) — 옆으로 누운 둥근 덩어리
-    d.ellipse((86, 54, 168, 100), fill=BELLY)      # 배(밝은 부분)
-    lobe((20, 82, 104, 116), BODY)                 # 팔베개(앞발) — 머리 아래 깔린 팔
-    lobe((8, 36, 92, 114), BODY)                   # 머리
-    d.ellipse((16, 50, 84, 106), fill=FACE)        # 얼굴 크림색 패치
-    d.ellipse((22, 60, 46, 84), fill=PATCH)        # 눈 주변 무늬
-    d.ellipse((52, 60, 76, 84), fill=PATCH)
-    d.arc((26, 64, 46, 86), start=200, end=340, fill=OUT, width=3)   # 감은 눈 ︶
-    d.arc((52, 64, 72, 86), start=200, end=340, fill=OUT, width=3)
-    d.ellipse((44, 82, 56, 92), fill=NOSE)         # 코
-    d.arc((42, 88, 58, 100), start=20, end=160, fill=OUT, width=2)   # 작은 미소
-    lobe((26, 98, 64, 118), BODY)                  # 앞발(팔베개) — 머리 앞으로 살짝
-    for cx in (34, 42, 50):
-        d.line((cx, 110, cx, 117), fill=CLAW, width=2)              # 발톱
-    d.line((50, 40, 50, 24), fill=GRN2, width=3)                    # 새싹 줄기
-    d.ellipse((34, 16, 52, 30), fill=GRN, outline=GRN2)             # 새싹 잎
-    d.ellipse((48, 16, 66, 30), fill=GRN, outline=GRN2)
-    return im
+def build_sleep_frames():
+    """누운늘보 -> 세근세근 숨쉬는(아주 미세한 상하 스케일) 프레임 sleep_*.png."""
+    im = cut_background(Image.open(SRC_SLEEP)).convert("RGBA")
+    w, h = im.size
+    TW = 200
+    base = im.resize((TW, max(1, round(h * TW / w))), Image.NEAREST)
+    bw, bh = base.size
+    M = 12
+    CWs, CHs = bw + 2 * M, bh + 2 * M
+    feet_y = M + bh                       # 바닥(눕는 면) 기준
+    for k in range(N_SLEEP):
+        ph = 2 * math.pi * k / N_SLEEP
+        sx = 1.0 + 0.012 * math.sin(ph)   # 배가 살짝 부풀었다 꺼짐
+        sy = 1.0 + 0.022 * math.sin(ph)
+        nw, nh = max(1, round(bw * sx)), max(1, round(bh * sy))
+        e = base.resize((nw, nh), Image.BICUBIC)
+        canvas = Image.new("RGBA", (CWs, CHs), (0, 0, 0, 0))
+        canvas.alpha_composite(e, (round(CWs / 2 - nw / 2), round(feet_y - nh)))
+        _flatten_to(canvas).save(os.path.join(OUTDIR, f"sleep_{k:02d}.png"))
+    return (CWs, CHs)
+
+
+def _back_out(p):
+    """back-ease-out: 0->1 이며 살짝 오버슈트(1 넘었다 안착)."""
+    c1 = 1.9; c3 = c1 + 1
+    p1 = p - 1.0
+    return 1.0 + c3 * p1 ** 3 + c1 * p1 ** 2
+
+
+def build_hug_frames():
+    """팔벌려늘보 -> 가로로 쫙 펴지며(팔 벌리는) 모션 hug_*.png. 발 위치는 클립과 동일."""
+    im = cut_background(Image.open(SRC_HUG)).convert("RGBA")
+    w, h = im.size
+    base = im.resize((max(1, round(w * TARGET_H / h)), TARGET_H), Image.NEAREST)
+    bw, bh = base.size
+    Mx = 46
+    CWh, CHh = bw + 2 * Mx, TM + TARGET_H + BM
+    feet_y = TM + TARGET_H
+    spread = 16
+    for k in range(N_HUG):
+        if k < spread:
+            p = k / spread
+            sx = 0.45 + 0.55 * _back_out(p)       # 좁았다가 팔 벌리며 쫙(오버슈트)
+            sy = 1.0 - 0.05 * math.sin(math.pi * p)
+        else:
+            sx, sy = 1.0, 1.0
+        nw, nh = max(1, round(bw * sx)), max(1, round(bh * sy))
+        e = base.resize((nw, nh), Image.BICUBIC)
+        canvas = Image.new("RGBA", (CWh, CHh), (0, 0, 0, 0))
+        canvas.alpha_composite(e, (round(CWh / 2 - nw / 2), round(feet_y - nh)))
+        _flatten_to(canvas).save(os.path.join(OUTDIR, f"hug_{k:02d}.png"))
+    return (CWh, CHh)
 
 
 def main():
@@ -302,23 +348,10 @@ def main():
             flatten(canvas).save(os.path.join(OUTDIR, f"{clip}_{k:02d}.png"))
         print("clip:", clip, "x", N)
 
-    # 거대 나무늘보(Ctrl+0)용 타이트 정적 소스 — pet.py가 zoom으로 확대. 여백 없이 작게 저장.
-    def flatten_tight(img):
-        ip = img.convert("RGBA").load()
-        w, h = img.size
-        out = Image.new("RGB", (w, h), MAG)
-        op = out.load()
-        for yy in range(h):
-            for xx in range(w):
-                r, g, b, a = ip[xx, yy]
-                if a >= 128:
-                    op[xx, yy] = (r, g, b)
-        return out
-
-    flatten_tight(B).save(os.path.join(OUTDIR, "giant.png"))                  # 서 있는 모습(폴백)
-    sleep = make_sleeping()                                                    # 엎드려 팔베개 자는 모습
-    flatten_tight(sleep).save(os.path.join(OUTDIR, "giant_sleep.png"))
-    print("giant.png:", (Bw, TARGET_H), " giant_sleep.png:", sleep.size)
+    # 누운(세근세근 숨쉬는) 모션 + 팔벌리기 모션
+    sleep_sz = build_sleep_frames()
+    hug_sz = build_hug_frames()
+    print("sleep_*:", N_SLEEP, sleep_sz, " hug_*:", N_HUG, hug_sz)
     print("size:", (CW, CH), "->", OUTDIR)
 
 
