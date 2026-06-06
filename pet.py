@@ -3,7 +3,9 @@
 데스크탑 펫 (Desktop Pet) - 나무늘보
 - 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
 - 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
-- 키 토글(ON/OFF): Ctrl=마우스 따라오기 / Ctrl+1=제자리 정지 / Ctrl+0=20배 거대화
+- 키: Ctrl=마우스 따라오기 토글 / Ctrl+1=제자리 정지 토글
+- Ctrl+0=거대 나무늘보 소환(독립 창, 우측하단 누운 모습, 여러 마리 가능) / Ctrl+00(더블탭)=눕힘<->일어서기
+- 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
 - 클릭하면 좋아서 폴짝 / 드래그로 이동 / 우클릭으로 종료
@@ -34,7 +36,9 @@ def key_down(vk):
 
 VK_CONTROL, VK_LCTRL, VK_RCTRL = 0x11, 0xA2, 0xA3
 VK_0, VK_1 = 0x30, 0x31
-GIANT_SCALE = 20            # Ctrl+0 거대 나무늘보 배율(기존 대비 20배)
+GIANT_SCALE = 2            # Ctrl+0 거대 나무늘보 배율(기존 20에서 1/10로 축소)
+GIANT_CAP = 6             # 한 프로세스에서 소환 가능한 거대 나무늘보 최대 수
+DOUBLE_0_WINDOW = 0.40    # Ctrl+0 더블탭(=ctrl+00, 눕힘 토글) 인식 시간(초)
 
 
 def resource_dir():
@@ -63,6 +67,134 @@ def virtual_screen():
 
 DARK   = "#46301F"   # 말풍선 테두리/글자
 SHADOW = "#4E3826"   # 바닥 그림자
+
+
+class GiantSloth:
+    """독립 창으로 뜨는 거대 나무늘보. 메인 펫들과 함께 화면에 공존하며,
+    같은 커맨드(Ctrl=따라오기 / Ctrl+1=정지)를 따른다. 처음엔 우측 하단에 누운 모습."""
+
+    def __init__(self, app, idx):
+        self.app = app
+        self.lying = True               # 처음 등장: 누운 모습
+        self.dragging = False
+        self.grab_dx = self.grab_dy = 0
+        self.vx = self.vy = 0.0
+        self.wtx = self.wty = None
+        self.wtimer = 0
+
+        self.win = tk.Toplevel(app.root)
+        self.win.overrideredirect(True)
+        self.win.wm_attributes("-topmost", True)
+        try:
+            self.win.wm_attributes("-transparentcolor", TRANSPARENT)
+        except tk.TclError:
+            pass
+        self.canvas = tk.Canvas(self.win, bg=TRANSPARENT, highlightthickness=0)
+        self.canvas.pack()
+        self.canvas.bind("<Button-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Button-3>", lambda e: app.remove_giant(self))
+
+        # 처음 위치: 주 모니터 우측 하단 (여러 마리면 조금씩 어긋나게)
+        img = self._img()
+        w, h = img.width(), img.height()
+        off = (idx % GIANT_CAP) * 36
+        self.x = float(app.pw - w - 20 - off)
+        self.y = float(app.ph - h - 20 - off)
+        self._resize_place()
+        self._draw()
+
+    def _img(self):
+        return self.app.giant_lie if self.lying else self.app.giant_stand
+
+    def _resize_place(self):
+        img = self._img()
+        self.canvas.config(width=img.width(), height=img.height())
+        self.win.geometry(f"{img.width()}x{img.height()}+{int(self.x)}+{int(self.y)}")
+
+    def _draw(self):
+        img = self._img()
+        self.canvas.delete("all")
+        self.canvas.create_image(img.width() / 2, img.height() / 2, image=img)
+
+    def toggle_lie(self):
+        """눕힘 <-> 일어서기. 바닥(발 위치) 기준 유지."""
+        img0 = self._img()
+        cx = self.x + img0.width() / 2
+        by = self.y + img0.height()
+        self.lying = not self.lying
+        img = self._img()
+        self.x = cx - img.width() / 2
+        self.y = by - img.height()
+        self._resize_place()
+        self._draw()
+
+    def _press(self, e):
+        self.dragging = True
+        self.grab_dx = self.win.winfo_pointerx() - self.x
+        self.grab_dy = self.win.winfo_pointery() - self.y
+
+    def _drag(self, e):
+        self.x = self.win.winfo_pointerx() - self.grab_dx
+        self.y = self.win.winfo_pointery() - self.grab_dy
+        self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
+
+    def _release(self, e):
+        self.dragging = False
+        self.vx = self.vy = 0.0
+
+    def _wander(self, w, h):
+        app = self.app
+        if self.wtimer <= 0:
+            if random.random() < 0.3:
+                self.wtx = self.wty = None
+                self.wtimer = random.randint(40, 100)
+            else:
+                self.wtx = random.uniform(app.vsx + 10, app.vsx + app.vsw - w - 10)
+                self.wty = random.uniform(app.vsy + 10, app.vsy + app.vsh - h - 10)
+                self.wtimer = random.randint(80, 180)
+        self.wtimer -= 1
+        if self.wtx is None:
+            return
+        dx, dy = self.wtx - self.x, self.wty - self.y
+        d = math.hypot(dx, dy)
+        if d < 8:
+            self.wtimer = 0
+        else:
+            self.vx += dx / d * 0.28
+            self.vy += dy / d * 0.28
+
+    def update(self):
+        if self.dragging:
+            return
+        app = self.app
+        img = self._img()
+        w, h = img.width(), img.height()
+        if app.frozen:
+            self.vx = self.vy = 0.0
+        else:
+            if app.follow_on:
+                px, py = app.root.winfo_pointerx(), app.root.winfo_pointery()
+                cx, cy = self.x + w / 2, self.y + h / 2
+                dx, dy = px - cx, py - cy
+                d = math.hypot(dx, dy)
+                if d > 140:
+                    self.vx += dx / d * 0.5
+                    self.vy += dy / d * 0.5
+            else:
+                self._wander(w, h)
+            self.vx *= 0.85
+            self.vy *= 0.85
+            cap = 7.0 if app.follow_on else 2.6
+            sp = math.hypot(self.vx, self.vy)
+            if sp > cap:
+                self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
+            self.x += self.vx
+            self.y += self.vy
+        self.x = max(app.vsx - w * 0.25, min(app.vsx + app.vsw - w * 0.75, self.x))
+        self.y = max(app.vsy, min(app.vsy + app.vsh - h, self.y))
+        self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
 
 
 class Pet:
@@ -94,13 +226,17 @@ class Pet:
         self.fh = any_frames[0].height()
         self.fphase = 0.0
 
-        # 거대 나무늘보(Ctrl+0)용 정적 소스 — 타이트 컷 frames/giant.png, 없으면 idle 첫 프레임
-        gp = os.path.join(here, FRAME_DIR, "giant.png")
-        try:
-            self.giant_base = tk.PhotoImage(file=gp) if os.path.exists(gp) else any_frames[0]
-        except Exception:
-            self.giant_base = any_frames[0]
-        self.giant_img = None        # zoom 결과 캐시(처음 켤 때 생성)
+        # 거대 나무늘보(Ctrl+0)용 정적 소스 (서있는/누운). pet.py가 zoom으로 확대.
+        def _load_png(p, fb):
+            try:
+                return tk.PhotoImage(file=p) if os.path.exists(p) else fb
+            except Exception:
+                return fb
+        self._gstand_src = _load_png(os.path.join(here, FRAME_DIR, "giant.png"), any_frames[0])
+        self._glie_src = _load_png(os.path.join(here, FRAME_DIR, "giant_lie.png"), self._gstand_src)
+        self.giant_stand = None      # zoom 캐시(처음 소환 때 생성)
+        self.giant_lie = None
+        self.giants = []             # 소환된 거대 나무늘보(독립 창)들
 
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
         self.W = max(self.fw, 360)
@@ -146,10 +282,9 @@ class Pet:
         self.hop = 0.0              # 점프 높이(위로 갈수록 음수)
         self.hop_v = 0.0
 
-        # 이동/키 상태 (모두 ON/OFF 토글)
-        self.follow_on = False      # Ctrl 탭: 마우스 따라오기 ON/OFF (기본 OFF=배회)
-        self.frozen = False         # Ctrl+1: 제자리 정지 ON/OFF
-        self.giant = False          # Ctrl+0: 거대화 ON/OFF
+        # 이동/키 상태
+        self.follow_on = False      # Ctrl 탭: 마우스 따라오기 ON/OFF (기본 OFF=배회) — 거대 펫도 공유
+        self.frozen = False         # Ctrl+1: 제자리 정지 ON/OFF — 거대 펫도 공유
         self.wtx = None             # 배회 목표점
         self.wty = None
         self.wtimer = 0
@@ -158,6 +293,8 @@ class Pet:
         self._p_k1 = False
         self._p_k0 = False
         self._combo = False         # Ctrl 누른 동안 다른 키도 눌렸는지(순수 탭 구분)
+        self._zero_pending = False  # Ctrl+0 단일/더블 구분 대기
+        self._zero_time = 0.0
 
         # 말풍선
         self.say_text = ""
@@ -243,8 +380,8 @@ class Pet:
         self.t += 1
         self._handle_keys()
 
-        # 거대화/정지 중이거나 드래그 중이면 이동 로직 건너뜀
-        if not self.dragging and not self.frozen and not self.giant:
+        # 정지 중이거나 드래그 중이면 (메인 펫) 이동 로직 건너뜀
+        if not self.dragging and not self.frozen:
             if self.follow_on:
                 # 따라오기 ON: 마우스를 따라옴 (가까우면 반가워서 폴짝, 멀면 쫓아감)
                 px = self.root.winfo_pointerx()
@@ -288,8 +425,8 @@ class Pet:
             self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
             self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
 
-        # 점프 물리 (거대화 중엔 정지)
-        if not self.giant and (self.hop_v != 0 or self.hop != 0):
+        # 점프 물리
+        if self.hop_v != 0 or self.hop != 0:
             self.hop += self.hop_v
             self.hop_v += 1.1
             if self.hop >= 0:
@@ -317,6 +454,10 @@ class Pet:
         elif self.mood == "happy":
             energy = max(energy, 0.7)
         self.fphase += 0.25 + energy * 0.85
+
+        # 거대 나무늘보(독립 창)들도 같은 커맨드(따라오기/정지)로 움직임
+        for g in list(self.giants):
+            g.update()
 
         self._write_share()         # 내 위치를 다른 펫에게 알림(겹침 방지용)
         self.draw()
@@ -458,15 +599,25 @@ class Pet:
                     self._combo = True
                     break
 
-        # Ctrl+1: 제자리 정지 ON/OFF
+        # Ctrl+1: 제자리 정지 ON/OFF (메인·거대 펫 모두)
         if ctrl and k1 and not self._p_k1:
             self.frozen = not self.frozen
             self.vx = self.vy = 0.0
             self.set_mood("idle")
             self.say(text="여기 가만히 있을게!" if self.frozen else "다시 움직일게~")
-        # Ctrl+0: 거대 나무늘보 ON/OFF
+        # Ctrl+0: (단일 탭)=거대 나무늘보 소환 / (더블탭=ctrl+00)=눕힘<->일어서기 토글
         if ctrl and k0 and not self._p_k0:
-            self._set_giant(not self.giant)
+            now = time.time()
+            if self._zero_pending and (now - self._zero_time) <= DOUBLE_0_WINDOW:
+                self._zero_pending = False           # 더블탭 -> 눕힘 토글(소환 취소)
+                self.toggle_giants_lie()
+            else:
+                self._zero_pending = True            # 일단 대기(더블탭인지 지켜봄)
+                self._zero_time = now
+        # 대기 중인 단일 0이 시간 지나면 소환 확정
+        if self._zero_pending and (time.time() - self._zero_time) > DOUBLE_0_WINDOW:
+            self._zero_pending = False
+            self.summon_giant()
         # 순수 Ctrl 탭(다른 키 없이 눌렀다 뗌): 따라오기 ON/OFF
         if (not ctrl) and self._p_ctrl and not self._combo:
             self.follow_on = not self.follow_on
@@ -474,40 +625,43 @@ class Pet:
 
         self._p_ctrl, self._p_k1, self._p_k0 = ctrl, k1, k0
 
-    def _set_giant(self, on):
-        if on == self.giant:
+    # ---------- 거대 나무늘보 (독립 창, 공존·중복 소환) ----------
+    def _ensure_giant_imgs(self):
+        if self.giant_stand is None:
+            try:
+                self.giant_stand = self._gstand_src.zoom(GIANT_SCALE)
+            except Exception:
+                self.giant_stand = self._gstand_src
+        if self.giant_lie is None:
+            try:
+                self.giant_lie = self._glie_src.zoom(GIANT_SCALE)
+            except Exception:
+                self.giant_lie = self._glie_src
+
+    def summon_giant(self):
+        if len(self.giants) >= GIANT_CAP:
+            self.say(text="이미 가득 찼어! 우클릭으로 보내줘~")
             return
-        if on:
-            if self.giant_img is None:               # 처음 켤 때만 확대(캐시)
-                try:
-                    self.giant_img = self.giant_base.zoom(GIANT_SCALE)
-                except Exception:
-                    self.giant_img = self.giant_base
-            gw, gh = self.giant_img.width(), self.giant_img.height()
-            self.giant = True
-            self.canvas.config(width=gw, height=gh)
-            gx = self.vsx + (self.pw - gw) // 2       # 주 모니터 가로 가운데
-            gy = self.vsy                              # 위쪽(머리부터 보이게)
-            self.root.geometry(f"{gw}x{gh}+{int(gx)}+{int(gy)}")
-            self.say(text="우오오~ 거대 나무늘보다!")
-        else:
-            self.giant = False
-            self.canvas.config(width=self.W, height=self.H)
-            self.x = float(self.pw - self.W - 120)
-            self.y = float(self.ph - self.H - 120)
-            self.root.geometry(f"{self.W}x{self.H}+{int(self.x)}+{int(self.y)}")
+        self._ensure_giant_imgs()
+        self.giants.append(GiantSloth(self, len(self.giants)))
+        self.say(text="우오오~ 거대 나무늘보 등장!")
+
+    def remove_giant(self, g):
+        try:
+            g.win.destroy()
+        except Exception:
+            pass
+        if g in self.giants:
+            self.giants.remove(g)
+
+    def toggle_giants_lie(self):
+        for g in self.giants:
+            g.toggle_lie()
 
     # ---------- 그리기 ----------
     def draw(self):
         c = self.canvas
         c.delete("all")
-
-        # 거대화 중: 확대 이미지 한 장만 표시
-        if self.giant and self.giant_img is not None:
-            c.create_image(self.giant_img.width() / 2, 0,
-                           image=self.giant_img, anchor="n")
-            return
-
         scx = self.W / 2
 
         bob = math.sin(self.t * 0.12) * 1.5          # 둥실

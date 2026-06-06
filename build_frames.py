@@ -271,16 +271,21 @@ def main():
         print("clip:", clip, "x", N)
 
     # 거대 나무늘보(Ctrl+0)용 타이트 정적 소스 — pet.py가 zoom으로 확대. 여백 없이 작게 저장.
-    gp = B.load()
-    giant = Image.new("RGB", (Bw, TARGET_H), MAG)
-    ggp = giant.load()
-    for y in range(TARGET_H):
-        for x in range(Bw):
-            r, g, b, a = gp[x, y]
-            if a >= 128:
-                ggp[x, y] = (r, g, b)
-    giant.save(os.path.join(OUTDIR, "giant.png"))
-    print("giant.png:", (Bw, TARGET_H))
+    def flatten_tight(img):
+        ip = img.convert("RGBA").load()
+        w, h = img.size
+        out = Image.new("RGB", (w, h), MAG)
+        op = out.load()
+        for yy in range(h):
+            for xx in range(w):
+                r, g, b, a = ip[xx, yy]
+                if a >= 128:
+                    op[xx, yy] = (r, g, b)
+        return out
+
+    flatten_tight(B).save(os.path.join(OUTDIR, "giant.png"))                  # 서 있는 모습
+    flatten_tight(B.rotate(90, expand=True)).save(os.path.join(OUTDIR, "giant_lie.png"))  # 누운 모습(90° 회전)
+    print("giant.png:", (Bw, TARGET_H), " giant_lie.png:", (TARGET_H, Bw))
     print("size:", (CW, CH), "->", OUTDIR)
 
 
