@@ -132,6 +132,8 @@ class GiantSloth:
         self.wtimer = 0
         self.t = 0
         self.fphase = 0.0
+        self.mood = "idle"          # 서있을 때 기분(idle/happy/startled/curious) — 일반 펫과 동일
+        self.mood_timer = 0
         self.say_text = ""
         self.say_timer = 0
         self.say_cd = random.randint(60, 160)
@@ -158,18 +160,30 @@ class GiantSloth:
         self._relayout()
         self._draw()
 
-    # 현재 표시 이미지 (누움=숨쉬기, 서있음=깜빡)
+    # 현재 표시 이미지 (누움=숨쉬기, 서있음=기분별 모션: 깜빡/통통/놀람/갸웃)
+    def _stand_clip(self):
+        clips = self.app.giant_clips
+        return clips.get(self.mood) or clips["idle"]
+
     def _cur_img(self):
         if self.lying:
             fr = self.app.giant_sleep_frames
             return fr[int(self.fphase) % len(fr)]
-        fr = self.app.giant_stand_frames
+        fr = self._stand_clip()
         return fr[int(self.fphase) % len(fr)]
 
     def _content_size(self):
-        # 누움=숨쉬기 프레임 크기 / 서있음=깜빡 프레임 크기
-        img = self.app.giant_sleep_frames[0] if self.lying else self.app.giant_stand_frames[0]
+        # 누움=숨쉬기 프레임 크기 / 서있음=클립 프레임 크기(모든 기분 동일)
+        img = self.app.giant_sleep_frames[0] if self.lying else self.app.giant_clips["idle"][0]
         return img.width(), img.height()
+
+    def set_mood(self, mood, timer=0):
+        changed = (mood != self.mood)
+        self.mood = mood
+        if changed and mood in ("happy", "startled"):
+            self.fphase = 0.0          # 반응 클립은 처음부터 재생
+        if timer:
+            self.mood_timer = timer
 
     def _relayout(self):
         cw, ch = self._content_size()
@@ -193,6 +207,8 @@ class GiantSloth:
         bx = self.x + self.win_w / 2          # 가로 중심
         by = self.y + self.win_h              # 바닥
         self.lying = not self.lying
+        self.mood = "idle"
+        self.mood_timer = 0
         self.say_text = ""
         self.say_timer = 0
         self.say_cd = random.randint(40, 120)
@@ -206,7 +222,8 @@ class GiantSloth:
         self.dragging = True
         self.grab_dx = self.win.winfo_pointerx() - self.x
         self.grab_dy = self.win.winfo_pointery() - self.y
-        if not self.lying:                  # 서 있을 때 클릭 -> 반가운 한마디
+        if not self.lying:                  # 서 있을 때 클릭 -> 좋아서 통통(happy)
+            self.set_mood("happy", 46)
             self.say_text = random.choice(("반가워!", "헤헤 좋아!", "고마워~"))
             self.say_timer = 80
 
@@ -231,14 +248,20 @@ class GiantSloth:
                 self.wtimer = random.randint(80, 180)
         self.wtimer -= 1
         if self.wtx is None:
+            if self.mood != "happy" and self.mood_timer == 0:
+                self.set_mood("idle")           # 쉬는 중 -> 깜빡
             return
         dx, dy = self.wtx - self.x, self.wty - self.y
         d = math.hypot(dx, dy)
         if d < 8:
             self.wtimer = 0
+            if self.mood != "happy" and self.mood_timer == 0:
+                self.set_mood("idle")
         else:
             self.vx += dx / d * 0.28
             self.vy += dy / d * 0.28
+            if self.mood != "happy" and self.mood_timer == 0:
+                self.set_mood("curious")        # 이동 중 -> 갸웃
 
     def _talk(self):
         if self.lying:
@@ -258,16 +281,24 @@ class GiantSloth:
         if slow:
             self.t += 1
             self._talk()
+            if self.mood_timer > 0:
+                self.mood_timer -= 1
             if not self.dragging and not self.lying and not app.frozen:
-                # 일어서 있을 때만 이동(일반 나무늘보처럼)
+                # 일어서 있을 때만 이동 + 일반 나무늘보와 똑같은 기분별 모션
                 if app.follow_on:
                     px, py = app.root.winfo_pointerx(), app.root.winfo_pointery()
                     cx, cy = self.x + self.win_w / 2, self.y + self.win_h / 2
                     dx, dy = px - cx, py - cy
                     d = math.hypot(dx, dy)
-                    if d > 160:
+                    personal, follow = 150, 240    # 거대하니 일반보다 넉넉히
+                    if d < personal:
+                        self.set_mood("startled")  # 너무 가까우면 움찔
+                    elif d > follow:
+                        self.set_mood("curious")   # 멀면 갸웃하며 다가옴
                         self.vx += dx / d * 0.5
                         self.vy += dy / d * 0.5
+                    elif self.mood != "happy" and self.mood_timer == 0:
+                        self.set_mood("idle")
                 else:
                     self._wander()
                 self.vx *= 0.85
@@ -286,7 +317,7 @@ class GiantSloth:
         if self.lying:
             self.fphase += 0.22          # 세근세근 숨쉬기
         else:
-            self.fphase += 0.5           # 깜빡
+            self.fphase += 0.5           # 기분별 모션(깜빡/통통/놀람/갸웃)
         self._draw()
 
 
@@ -329,7 +360,7 @@ class Pet:
         self._sleep_srcs = [tk.PhotoImage(file=f) for f in
                             sorted(glob.glob(os.path.join(here, FRAME_DIR, "sleep_*.png")))] or [any_frames[0]]
         self.giant_sleep_frames = None   # 누운 숨쉬기 zoom 캐시
-        self.giant_stand_frames = None   # 서있는 깜빡 애니메이션(idle 클립 zoom) 캐시
+        self.giant_clips = None          # 서있는 기분별 클립(idle/happy/startled/curious) zoom 캐시
         self.giants = []                 # 소환된 거대 나무늘보(독립 창)들
 
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
@@ -729,8 +760,9 @@ class Pet:
     def _ensure_giant_imgs(self):
         if self.giant_sleep_frames is None:
             self.giant_sleep_frames = self._zoom_all(self._sleep_srcs)
-        if self.giant_stand_frames is None:
-            self.giant_stand_frames = self._zoom_all(self.clips.get("idle") or next(iter(self.clips.values())))
+        if self.giant_clips is None:
+            # 서있을 때 일반 펫과 똑같은 기분별 모션을 쓰도록 모든 클립을 확대 캐시
+            self.giant_clips = {name: self._zoom_all(frames) for name, frames in self.clips.items()}
 
     def summon_giant(self):
         if len(self.giants) >= GIANT_CAP:
