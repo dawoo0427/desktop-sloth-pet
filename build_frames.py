@@ -269,6 +269,18 @@ def main():
 
             flatten(canvas).save(os.path.join(OUTDIR, f"{clip}_{k:02d}.png"))
         print("clip:", clip, "x", N)
+
+    # 거대 나무늘보(Ctrl+0)용 타이트 정적 소스 — pet.py가 zoom으로 확대. 여백 없이 작게 저장.
+    gp = B.load()
+    giant = Image.new("RGB", (Bw, TARGET_H), MAG)
+    ggp = giant.load()
+    for y in range(TARGET_H):
+        for x in range(Bw):
+            r, g, b, a = gp[x, y]
+            if a >= 128:
+                ggp[x, y] = (r, g, b)
+    giant.save(os.path.join(OUTDIR, "giant.png"))
+    print("giant.png:", (Bw, TARGET_H))
     print("size:", (CW, CH), "->", OUTDIR)
 
 

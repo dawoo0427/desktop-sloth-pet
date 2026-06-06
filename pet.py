@@ -3,7 +3,7 @@
 데스크탑 펫 (Desktop Pet) - 나무늘보
 - 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
 - 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
-- Ctrl 키를 누르고 있으면: 마우스를 따라옴 (모니터 2·3번까지)
+- 키 토글(ON/OFF): Ctrl=마우스 따라오기 / Ctrl+1=제자리 정지 / Ctrl+0=20배 거대화
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
 - 클릭하면 좋아서 폴짝 / 드래그로 이동 / 우클릭으로 종료
@@ -23,13 +23,18 @@ TRANSPARENT = "magenta"   # 이 색은 화면에서 투명 처리됨 (프레임 
 FRAME_DIR = "frames"
 
 
-def ctrl_pressed():
-    """Ctrl 키가 눌려있는지(창 포커스 무관 전역 감지). 윈도우 전용, 실패 시 False."""
+def key_down(vk):
+    """가상키코드 vk가 눌려있는지(창 포커스 무관 전역 감지). 윈도우 전용, 실패 시 False."""
     try:
         import ctypes
-        return bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)  # VK_CONTROL
+        return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
     except Exception:
         return False
+
+
+VK_CONTROL, VK_LCTRL, VK_RCTRL = 0x11, 0xA2, 0xA3
+VK_0, VK_1 = 0x30, 0x31
+GIANT_SCALE = 20            # Ctrl+0 거대 나무늘보 배율(기존 대비 20배)
 
 
 def resource_dir():
@@ -89,6 +94,14 @@ class Pet:
         self.fh = any_frames[0].height()
         self.fphase = 0.0
 
+        # 거대 나무늘보(Ctrl+0)용 정적 소스 — 타이트 컷 frames/giant.png, 없으면 idle 첫 프레임
+        gp = os.path.join(here, FRAME_DIR, "giant.png")
+        try:
+            self.giant_base = tk.PhotoImage(file=gp) if os.path.exists(gp) else any_frames[0]
+        except Exception:
+            self.giant_base = any_frames[0]
+        self.giant_img = None        # zoom 결과 캐시(처음 켤 때 생성)
+
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
         self.W = max(self.fw, 360)
         self.H = self.fh + 58
@@ -133,11 +146,18 @@ class Pet:
         self.hop = 0.0              # 점프 높이(위로 갈수록 음수)
         self.hop_v = 0.0
 
-        # 이동 모드: Ctrl 누르면 마우스 따라오기, 평소엔 랜덤 배회
-        self.follow_mode = False
+        # 이동/키 상태 (모두 ON/OFF 토글)
+        self.follow_on = False      # Ctrl 탭: 마우스 따라오기 ON/OFF (기본 OFF=배회)
+        self.frozen = False         # Ctrl+1: 제자리 정지 ON/OFF
+        self.giant = False          # Ctrl+0: 거대화 ON/OFF
         self.wtx = None             # 배회 목표점
         self.wty = None
         self.wtimer = 0
+        # 키 엣지 감지용 이전 상태
+        self._p_ctrl = False
+        self._p_k1 = False
+        self._p_k0 = False
+        self._combo = False         # Ctrl 누른 동안 다른 키도 눌렸는지(순수 탭 구분)
 
         # 말풍선
         self.say_text = ""
@@ -221,11 +241,12 @@ class Pet:
     # ---------- 메인 루프 ----------
     def loop(self):
         self.t += 1
-        self.follow_mode = (not self.dragging) and ctrl_pressed()
+        self._handle_keys()
 
-        if not self.dragging:
-            if self.follow_mode:
-                # Ctrl 누름: 마우스를 따라옴 (가까우면 반가워서 폴짝, 멀면 쫓아감)
+        # 거대화/정지 중이거나 드래그 중이면 이동 로직 건너뜀
+        if not self.dragging and not self.frozen and not self.giant:
+            if self.follow_on:
+                # 따라오기 ON: 마우스를 따라옴 (가까우면 반가워서 폴짝, 멀면 쫓아감)
                 px = self.root.winfo_pointerx()
                 py = self.root.winfo_pointery()
                 cx = self.x + self.cx_off
@@ -244,7 +265,7 @@ class Pet:
                 elif self.mood not in ("happy",) and self.mood_timer == 0:
                     self.set_mood("idle")
             else:
-                # 평소: 화면을 랜덤으로 느긋하게 배회
+                # 따라오기 OFF: 화면을 랜덤으로 느긋하게 배회
                 self._wander()
 
             # 다른 펫과 안 겹치게 서로 밀어내기(두 모드 공통)
@@ -254,7 +275,7 @@ class Pet:
 
             self.vx *= 0.85
             self.vy *= 0.85
-            cap = 9.0 if self.follow_mode else 3.2   # 따라올 땐 빠르게, 배회는 느긋
+            cap = 9.0 if self.follow_on else 3.2   # 따라올 땐 빠르게, 배회는 느긋
             sp = math.hypot(self.vx, self.vy)
             if sp > cap:
                 self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
@@ -267,8 +288,8 @@ class Pet:
             self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
             self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
 
-        # 점프 물리
-        if self.hop_v != 0 or self.hop != 0:
+        # 점프 물리 (거대화 중엔 정지)
+        if not self.giant and (self.hop_v != 0 or self.hop != 0):
             self.hop += self.hop_v
             self.hop_v += 1.1
             if self.hop >= 0:
@@ -420,10 +441,73 @@ class Pet:
             if self.mood not in ("happy",) and self.mood_timer == 0:
                 self.set_mood("curious")
 
+    # ---------- 키 토글 (Ctrl / Ctrl+1 / Ctrl+0) ----------
+    def _handle_keys(self):
+        ctrl = key_down(VK_CONTROL)
+        k1 = key_down(VK_1)
+        k0 = key_down(VK_0)
+
+        if ctrl and not self._p_ctrl:
+            self._combo = False
+        if ctrl:
+            # Ctrl 누른 동안 다른 키(숫자·C·V 등)가 같이 눌리면 '조합'으로 보고 follow 토글 제외
+            for vk in range(0x08, 0xFF):
+                if vk in (VK_CONTROL, VK_LCTRL, VK_RCTRL):
+                    continue
+                if key_down(vk):
+                    self._combo = True
+                    break
+
+        # Ctrl+1: 제자리 정지 ON/OFF
+        if ctrl and k1 and not self._p_k1:
+            self.frozen = not self.frozen
+            self.vx = self.vy = 0.0
+            self.set_mood("idle")
+            self.say(text="여기 가만히 있을게!" if self.frozen else "다시 움직일게~")
+        # Ctrl+0: 거대 나무늘보 ON/OFF
+        if ctrl and k0 and not self._p_k0:
+            self._set_giant(not self.giant)
+        # 순수 Ctrl 탭(다른 키 없이 눌렀다 뗌): 따라오기 ON/OFF
+        if (not ctrl) and self._p_ctrl and not self._combo:
+            self.follow_on = not self.follow_on
+            self.say(text="좋아, 따라갈게!" if self.follow_on else "여기서 놀고 있을게~")
+
+        self._p_ctrl, self._p_k1, self._p_k0 = ctrl, k1, k0
+
+    def _set_giant(self, on):
+        if on == self.giant:
+            return
+        if on:
+            if self.giant_img is None:               # 처음 켤 때만 확대(캐시)
+                try:
+                    self.giant_img = self.giant_base.zoom(GIANT_SCALE)
+                except Exception:
+                    self.giant_img = self.giant_base
+            gw, gh = self.giant_img.width(), self.giant_img.height()
+            self.giant = True
+            self.canvas.config(width=gw, height=gh)
+            gx = self.vsx + (self.pw - gw) // 2       # 주 모니터 가로 가운데
+            gy = self.vsy                              # 위쪽(머리부터 보이게)
+            self.root.geometry(f"{gw}x{gh}+{int(gx)}+{int(gy)}")
+            self.say(text="우오오~ 거대 나무늘보다!")
+        else:
+            self.giant = False
+            self.canvas.config(width=self.W, height=self.H)
+            self.x = float(self.pw - self.W - 120)
+            self.y = float(self.ph - self.H - 120)
+            self.root.geometry(f"{self.W}x{self.H}+{int(self.x)}+{int(self.y)}")
+
     # ---------- 그리기 ----------
     def draw(self):
         c = self.canvas
         c.delete("all")
+
+        # 거대화 중: 확대 이미지 한 장만 표시
+        if self.giant and self.giant_img is not None:
+            c.create_image(self.giant_img.width() / 2, 0,
+                           image=self.giant_img, anchor="n")
+            return
+
         scx = self.W / 2
 
         bob = math.sin(self.t * 0.12) * 1.5          # 둥실
