@@ -22,13 +22,11 @@ def _src(local_name, onedrive_name):
 # 원본 그림(프로젝트 폴더 우선, 없으면 바탕화면)
 SRC = _src("나무늘보.png", "나무늘보.png")            # 서있는 기본
 SRC_SLEEP = _src("누운늘보.png", "누운늘보.png")        # 누워 자는 모습
-SRC_HUG = _src("팔벌려늘보.png", "팔벌려 늘보.png")     # 팔 벌린 모습
 OUTDIR = os.path.join(HERE, "frames")
 MAG = (255, 0, 255)
 TARGET_H = 150
 N = 60                       # 클립당 프레임 수
 N_SLEEP = 60                 # 누운 숨쉬기 한 주기 프레임 수
-N_HUG = 30                   # 팔 벌리기 모션 프레임 수
 TM, SM, BM = 30, 26, 8       # 위/옆/아래 여백(변형 시 잘림 방지)
 
 
@@ -37,17 +35,30 @@ def cut_by_alpha(im):
     im = im.convert("RGBA")
     W, H = im.size
     px = im.load()
-    fg = [[px[x, y][3] >= 128 for x in range(W)] for y in range(H)]
-    rm = []
-    for y in range(H):
-        for x in range(W):
-            if not fg[y][x] or px[x, y][3] >= 230:
-                continue
-            for nx, ny in ((x+1, y), (x-1, y), (x, y+1), (x, y-1)):
-                if 0 <= nx < W and 0 <= ny < H and not fg[ny][nx]:
-                    rm.append((x, y)); break
-    for x, y in rm:
-        fg[y][x] = False
+    fg = [[px[x, y][3] >= 140 for x in range(W)] for y in range(H)]
+    nb = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1))
+    # 가장자리 fringe(반투명 + 흰 halo) 흡수: 배경에 닿은 픽셀 중
+    #  alpha가 어중간하거나 거의 흰색(모든 채널 큰)이면 제거. 3회 erode.
+    for _ in range(3):
+        rm = []
+        for y in range(H):
+            for x in range(W):
+                if not fg[y][x]:
+                    continue
+                edge = False
+                for dx, dy in nb:
+                    nx, ny = x + dx, y + dy
+                    if not (0 <= nx < W and 0 <= ny < H) or not fg[ny][nx]:
+                        edge = True; break
+                if not edge:
+                    continue
+                r, g, b, a = px[x, y]
+                if a < 245 or min(r, g, b) > 226:   # 반투명/흰 halo -> 흡수
+                    rm.append((x, y))
+        if not rm:
+            break
+        for x, y in rm:
+            fg[y][x] = False
     out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     op = out.load()
     for y in range(H):
@@ -253,31 +264,6 @@ def _back_out(p):
     return 1.0 + c3 * p1 ** 3 + c1 * p1 ** 2
 
 
-def build_hug_frames():
-    """팔벌려늘보 -> 가로로 쫙 펴지며(팔 벌리는) 모션 hug_*.png. 발 위치는 클립과 동일."""
-    im = cut_background(Image.open(SRC_HUG)).convert("RGBA")
-    w, h = im.size
-    base = im.resize((max(1, round(w * TARGET_H / h)), TARGET_H), Image.NEAREST)
-    bw, bh = base.size
-    Mx = 46
-    CWh, CHh = bw + 2 * Mx, TM + TARGET_H + BM
-    feet_y = TM + TARGET_H
-    spread = 16
-    for k in range(N_HUG):
-        if k < spread:
-            p = k / spread
-            sx = 0.45 + 0.55 * _back_out(p)       # 좁았다가 팔 벌리며 쫙(오버슈트)
-            sy = 1.0 - 0.05 * math.sin(math.pi * p)
-        else:
-            sx, sy = 1.0, 1.0
-        nw, nh = max(1, round(bw * sx)), max(1, round(bh * sy))
-        e = base.resize((nw, nh), Image.BICUBIC)
-        canvas = Image.new("RGBA", (CWh, CHh), (0, 0, 0, 0))
-        canvas.alpha_composite(e, (round(CWh / 2 - nw / 2), round(feet_y - nh)))
-        _flatten_to(canvas).save(os.path.join(OUTDIR, f"hug_{k:02d}.png"))
-    return (CWh, CHh)
-
-
 def main():
     src = cut_background(Image.open(SRC))
     w, h = src.size
@@ -348,10 +334,9 @@ def main():
             flatten(canvas).save(os.path.join(OUTDIR, f"{clip}_{k:02d}.png"))
         print("clip:", clip, "x", N)
 
-    # 누운(세근세근 숨쉬는) 모션 + 팔벌리기 모션
+    # 누운(세근세근 숨쉬는) 모션
     sleep_sz = build_sleep_frames()
-    hug_sz = build_hug_frames()
-    print("sleep_*:", N_SLEEP, sleep_sz, " hug_*:", N_HUG, hug_sz)
+    print("sleep_*:", N_SLEEP, sleep_sz)
     print("size:", (CW, CH), "->", OUTDIR)
 
 
