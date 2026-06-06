@@ -9,7 +9,7 @@
 import os
 import math
 from collections import deque
-from PIL import Image
+from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 원본 그림: 프로젝트 폴더의 나무늘보.png 우선, 없으면 바탕화면(OneDrive) 경로
@@ -200,6 +200,38 @@ def blink_at(center):
     return {center - 2 + i: seq[i] for i in range(5)}
 
 
+def make_sleeping():
+    """거대 나무늘보가 누운(엎드려 팔베개·눈감고 자는) 모습 — RGBA 직접 드로잉."""
+    BODY = (188, 144, 105); BELLY = (236, 199, 159); FACE = (247, 224, 190)
+    PATCH = (170, 128, 92); OUT = (92, 62, 40); NOSE = (74, 50, 34)
+    CLAW = (250, 236, 208); GRN = (142, 198, 60); GRN2 = (96, 150, 52)
+    W, H = 190, 124
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+
+    def lobe(box, fill, w=3):
+        d.ellipse(box, fill=fill, outline=OUT, width=w)
+
+    lobe((58, 30, 182, 104), BODY)                 # 등(몸통) — 옆으로 누운 둥근 덩어리
+    d.ellipse((86, 54, 168, 100), fill=BELLY)      # 배(밝은 부분)
+    lobe((20, 82, 104, 116), BODY)                 # 팔베개(앞발) — 머리 아래 깔린 팔
+    lobe((8, 36, 92, 114), BODY)                   # 머리
+    d.ellipse((16, 50, 84, 106), fill=FACE)        # 얼굴 크림색 패치
+    d.ellipse((22, 60, 46, 84), fill=PATCH)        # 눈 주변 무늬
+    d.ellipse((52, 60, 76, 84), fill=PATCH)
+    d.arc((26, 64, 46, 86), start=200, end=340, fill=OUT, width=3)   # 감은 눈 ︶
+    d.arc((52, 64, 72, 86), start=200, end=340, fill=OUT, width=3)
+    d.ellipse((44, 82, 56, 92), fill=NOSE)         # 코
+    d.arc((42, 88, 58, 100), start=20, end=160, fill=OUT, width=2)   # 작은 미소
+    lobe((26, 98, 64, 118), BODY)                  # 앞발(팔베개) — 머리 앞으로 살짝
+    for cx in (34, 42, 50):
+        d.line((cx, 110, cx, 117), fill=CLAW, width=2)              # 발톱
+    d.line((50, 40, 50, 24), fill=GRN2, width=3)                    # 새싹 줄기
+    d.ellipse((34, 16, 52, 30), fill=GRN, outline=GRN2)             # 새싹 잎
+    d.ellipse((48, 16, 66, 30), fill=GRN, outline=GRN2)
+    return im
+
+
 def main():
     src = cut_background(Image.open(SRC))
     w, h = src.size
@@ -283,9 +315,10 @@ def main():
                     op[xx, yy] = (r, g, b)
         return out
 
-    flatten_tight(B).save(os.path.join(OUTDIR, "giant.png"))                  # 서 있는 모습
-    flatten_tight(B.rotate(90, expand=True)).save(os.path.join(OUTDIR, "giant_lie.png"))  # 누운 모습(90° 회전)
-    print("giant.png:", (Bw, TARGET_H), " giant_lie.png:", (TARGET_H, Bw))
+    flatten_tight(B).save(os.path.join(OUTDIR, "giant.png"))                  # 서 있는 모습(폴백)
+    sleep = make_sleeping()                                                    # 엎드려 팔베개 자는 모습
+    flatten_tight(sleep).save(os.path.join(OUTDIR, "giant_sleep.png"))
+    print("giant.png:", (Bw, TARGET_H), " giant_sleep.png:", sleep.size)
     print("size:", (CW, CH), "->", OUTDIR)
 
 

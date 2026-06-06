@@ -68,10 +68,59 @@ def virtual_screen():
 DARK   = "#46301F"   # 말풍선 테두리/글자
 SHADOW = "#4E3826"   # 바닥 그림자
 
+GIANT_LINES = ["나도 잘하고 있지?", "오늘도 화이팅!", "크지만 마음은 말랑~",
+               "같이 쉬어가자~", "천천히 가도 괜찮아", "행복한 하루 보내!"]
+
+
+def _round_rect(c, x0, y0, x1, y1, r, fill="", outline="", width=1):
+    c.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90, style="pieslice", fill=fill, outline=fill)
+    c.create_arc(x1 - 2 * r, y0, x1, y0 + 2 * r, start=0, extent=90, style="pieslice", fill=fill, outline=fill)
+    c.create_arc(x0, y1 - 2 * r, x0 + 2 * r, y1, start=180, extent=90, style="pieslice", fill=fill, outline=fill)
+    c.create_arc(x1 - 2 * r, y1 - 2 * r, x1, y1, start=270, extent=90, style="pieslice", fill=fill, outline=fill)
+    c.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill, outline=fill)
+    c.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill, outline=fill)
+    if outline:
+        c.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90, style="arc", outline=outline, width=width)
+        c.create_arc(x1 - 2 * r, y0, x1, y0 + 2 * r, start=0, extent=90, style="arc", outline=outline, width=width)
+        c.create_arc(x0, y1 - 2 * r, x0 + 2 * r, y1, start=180, extent=90, style="arc", outline=outline, width=width)
+        c.create_arc(x1 - 2 * r, y1 - 2 * r, x1, y1, start=270, extent=90, style="arc", outline=outline, width=width)
+        c.create_line(x0 + r, y0, x1 - r, y0, fill=outline, width=width)
+        c.create_line(x0 + r, y1, x1 - r, y1, fill=outline, width=width)
+        c.create_line(x0, y0 + r, x0, y1 - r, fill=outline, width=width)
+        c.create_line(x1, y0 + r, x1, y1 - r, fill=outline, width=width)
+
+
+def draw_speech_bubble(c, scx, y_anchor, text, win_w):
+    """말풍선을 캔버스 c에 그림. 창 폭 안에서 자동 줄바꿈(긴 글도 안 잘림)."""
+    maxw = max(110, win_w - 40)
+    txt = c.create_text(scx, -100, text=text, anchor="center", width=maxw, justify="center",
+                        font=("맑은 고딕", 11, "bold"), fill=DARK)
+    bb = c.bbox(txt)
+    bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+    pad = 9
+    x0, x1 = scx - bw / 2 - pad, scx + bw / 2 + pad
+    if x0 < 3:
+        x1 += 3 - x0; x0 = 3
+    if x1 > win_w - 3:
+        x0 -= x1 - (win_w - 3); x1 = win_w - 3
+    y1 = y_anchor
+    y0 = y1 - bh - pad * 2
+    if y0 < 3:
+        d2 = 3 - y0; y0 += d2; y1 += d2
+    cxm = (x0 + x1) / 2
+    c.create_polygon(cxm - 8, y1, cxm + 8, y1, cxm, y1 + 11, fill="white", outline=DARK, width=2)
+    _round_rect(c, x0, y0, x1, y1, 10, fill="white", outline=DARK, width=2)
+    c.create_line(cxm - 8, y1, cxm + 8, y1, fill="white", width=3)
+    c.coords(txt, cxm, (y0 + y1) / 2)
+    c.tag_raise(txt)
+
 
 class GiantSloth:
-    """독립 창으로 뜨는 거대 나무늘보. 메인 펫들과 함께 화면에 공존하며,
-    같은 커맨드(Ctrl=따라오기 / Ctrl+1=정지)를 따른다. 처음엔 우측 하단에 누운 모습."""
+    """독립 창 거대 나무늘보. 메인 펫들과 공존, 같은 커맨드(Ctrl=따라오기/Ctrl+1=정지).
+    - 누우면: 엎드려 팔베개 자는 모습(정지) + 'Zzz' 말풍선
+    - 일어서면: 일반 나무늘보처럼 깜빡/이동 + 응원 말풍선"""
+
+    BUBBLE_H = 60               # 말풍선용 위쪽 여백
 
     def __init__(self, app, idx):
         self.app = app
@@ -81,6 +130,11 @@ class GiantSloth:
         self.vx = self.vy = 0.0
         self.wtx = self.wty = None
         self.wtimer = 0
+        self.t = 0
+        self.fphase = 0.0
+        self.say_text = ""
+        self.say_timer = 0
+        self.say_cd = random.randint(60, 160)
 
         self.win = tk.Toplevel(app.root)
         self.win.overrideredirect(True)
@@ -97,37 +151,53 @@ class GiantSloth:
         self.canvas.bind("<Button-3>", lambda e: app.remove_giant(self))
 
         # 처음 위치: 주 모니터 우측 하단 (여러 마리면 조금씩 어긋나게)
-        img = self._img()
-        w, h = img.width(), img.height()
+        cw, ch = self._content_size()
         off = (idx % GIANT_CAP) * 36
-        self.x = float(app.pw - w - 20 - off)
-        self.y = float(app.ph - h - 20 - off)
-        self._resize_place()
+        self.x = float(app.pw - cw - 20 - off)
+        self.y = float(app.ph - (ch + self.BUBBLE_H) - 20 - off)
+        self._relayout()
         self._draw()
 
-    def _img(self):
-        return self.app.giant_lie if self.lying else self.app.giant_stand
+    # 현재 표시 이미지
+    def _cur_img(self):
+        if self.lying:
+            return self.app.giant_sleep
+        frames = self.app.giant_stand_frames
+        return frames[int(self.fphase) % len(frames)]
 
-    def _resize_place(self):
-        img = self._img()
-        self.canvas.config(width=img.width(), height=img.height())
-        self.win.geometry(f"{img.width()}x{img.height()}+{int(self.x)}+{int(self.y)}")
+    def _content_size(self):
+        img = self.app.giant_sleep if self.lying else self.app.giant_stand_frames[0]
+        return img.width(), img.height()
+
+    def _relayout(self):
+        cw, ch = self._content_size()
+        self.cw, self.ch = cw, ch
+        self.win_w = cw
+        self.win_h = ch + self.BUBBLE_H
+        self.canvas.config(width=self.win_w, height=self.win_h)
+        self.win.geometry(f"{self.win_w}x{self.win_h}+{int(self.x)}+{int(self.y)}")
 
     def _draw(self):
-        img = self._img()
-        self.canvas.delete("all")
-        self.canvas.create_image(img.width() / 2, img.height() / 2, image=img)
+        c = self.canvas
+        c.delete("all")
+        img = self._cur_img()
+        c.create_image(self.win_w / 2, self.BUBBLE_H, image=img, anchor="n")
+        if self.say_timer > 0 and self.say_text:
+            draw_speech_bubble(c, self.win_w / 2, self.BUBBLE_H + self.ch * 0.14,
+                               self.say_text, self.win_w)
 
     def toggle_lie(self):
         """눕힘 <-> 일어서기. 바닥(발 위치) 기준 유지."""
-        img0 = self._img()
-        cx = self.x + img0.width() / 2
-        by = self.y + img0.height()
+        bx = self.x + self.win_w / 2          # 가로 중심
+        by = self.y + self.win_h              # 바닥
         self.lying = not self.lying
-        img = self._img()
-        self.x = cx - img.width() / 2
-        self.y = by - img.height()
-        self._resize_place()
+        self.say_text = ""
+        self.say_timer = 0
+        self.say_cd = random.randint(40, 120)
+        cw, ch = self._content_size()
+        self.x = bx - cw / 2
+        self.y = by - (ch + self.BUBBLE_H)
+        self._relayout()
         self._draw()
 
     def _press(self, e):
@@ -144,15 +214,15 @@ class GiantSloth:
         self.dragging = False
         self.vx = self.vy = 0.0
 
-    def _wander(self, w, h):
+    def _wander(self):
         app = self.app
         if self.wtimer <= 0:
             if random.random() < 0.3:
                 self.wtx = self.wty = None
                 self.wtimer = random.randint(40, 100)
             else:
-                self.wtx = random.uniform(app.vsx + 10, app.vsx + app.vsw - w - 10)
-                self.wty = random.uniform(app.vsy + 10, app.vsy + app.vsh - h - 10)
+                self.wtx = random.uniform(app.vsx + 10, app.vsx + app.vsw - self.win_w - 10)
+                self.wty = random.uniform(app.vsy + 10, app.vsy + app.vsh - self.win_h - 10)
                 self.wtimer = random.randint(80, 180)
         self.wtimer -= 1
         if self.wtx is None:
@@ -165,36 +235,54 @@ class GiantSloth:
             self.vx += dx / d * 0.28
             self.vy += dy / d * 0.28
 
-    def update(self):
-        if self.dragging:
-            return
-        app = self.app
-        img = self._img()
-        w, h = img.width(), img.height()
-        if app.frozen:
-            self.vx = self.vy = 0.0
+    def _talk(self):
+        if self.lying:
+            # 자는 중: 항상 Zzz (Z -> Zz -> Zzz 천천히 깜빡)
+            self.say_text = "Z" + "z" * ((self.t // 16) % 3)
+            self.say_timer = 2
         else:
-            if app.follow_on:
-                px, py = app.root.winfo_pointerx(), app.root.winfo_pointery()
-                cx, cy = self.x + w / 2, self.y + h / 2
-                dx, dy = px - cx, py - cy
-                d = math.hypot(dx, dy)
-                if d > 140:
-                    self.vx += dx / d * 0.5
-                    self.vy += dy / d * 0.5
+            if self.say_timer > 0:
+                self.say_timer -= 1
             else:
-                self._wander(w, h)
-            self.vx *= 0.85
-            self.vy *= 0.85
-            cap = 7.0 if app.follow_on else 2.6
-            sp = math.hypot(self.vx, self.vy)
-            if sp > cap:
-                self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
-            self.x += self.vx
-            self.y += self.vy
-        self.x = max(app.vsx - w * 0.25, min(app.vsx + app.vsw - w * 0.75, self.x))
-        self.y = max(app.vsy, min(app.vsy + app.vsh - h, self.y))
-        self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
+                self.say_cd -= 1
+                if self.say_cd <= 0:
+                    self.say_text = random.choice(GIANT_LINES)
+                    self.say_timer = 90
+                    self.say_cd = random.randint(140, 300)
+
+    def update(self):
+        self.t += 1
+        self._talk()
+        if not self.dragging and not self.lying:
+            # 일어서 있을 때만 이동(일반 나무늘보처럼) + 깜빡 애니메이션
+            app = self.app
+            if app.frozen:
+                self.vx = self.vy = 0.0
+            else:
+                if app.follow_on:
+                    px, py = app.root.winfo_pointerx(), app.root.winfo_pointery()
+                    cx, cy = self.x + self.win_w / 2, self.y + self.win_h / 2
+                    dx, dy = px - cx, py - cy
+                    d = math.hypot(dx, dy)
+                    if d > 160:
+                        self.vx += dx / d * 0.5
+                        self.vy += dy / d * 0.5
+                else:
+                    self._wander()
+                self.vx *= 0.85
+                self.vy *= 0.85
+                cap = 7.0 if app.follow_on else 2.6
+                sp = math.hypot(self.vx, self.vy)
+                if sp > cap:
+                    self.vx, self.vy = self.vx / sp * cap, self.vy / sp * cap
+                self.x += self.vx
+                self.y += self.vy
+            self.x = max(app.vsx - self.win_w * 0.25,
+                         min(app.vsx + app.vsw - self.win_w * 0.75, self.x))
+            self.y = max(app.vsy, min(app.vsy + app.vsh - self.win_h, self.y))
+            self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
+            self.fphase += 0.5            # 깜빡 애니메이션 진행
+        self._draw()
 
 
 class Pet:
@@ -232,11 +320,10 @@ class Pet:
                 return tk.PhotoImage(file=p) if os.path.exists(p) else fb
             except Exception:
                 return fb
-        self._gstand_src = _load_png(os.path.join(here, FRAME_DIR, "giant.png"), any_frames[0])
-        self._glie_src = _load_png(os.path.join(here, FRAME_DIR, "giant_lie.png"), self._gstand_src)
-        self.giant_stand = None      # zoom 캐시(처음 소환 때 생성)
-        self.giant_lie = None
-        self.giants = []             # 소환된 거대 나무늘보(독립 창)들
+        self._gsleep_src = _load_png(os.path.join(here, FRAME_DIR, "giant_sleep.png"), any_frames[0])
+        self.giant_sleep = None          # 누운(자는) 모습 zoom 캐시
+        self.giant_stand_frames = None   # 서있는 애니메이션(idle 클립 zoom) 캐시
+        self.giants = []                 # 소환된 거대 나무늘보(독립 창)들
 
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
         self.W = max(self.fw, 360)
@@ -627,16 +714,20 @@ class Pet:
 
     # ---------- 거대 나무늘보 (독립 창, 공존·중복 소환) ----------
     def _ensure_giant_imgs(self):
-        if self.giant_stand is None:
+        if self.giant_sleep is None:
             try:
-                self.giant_stand = self._gstand_src.zoom(GIANT_SCALE)
+                self.giant_sleep = self._gsleep_src.zoom(GIANT_SCALE)
             except Exception:
-                self.giant_stand = self._gstand_src
-        if self.giant_lie is None:
-            try:
-                self.giant_lie = self._glie_src.zoom(GIANT_SCALE)
-            except Exception:
-                self.giant_lie = self._glie_src
+                self.giant_sleep = self._gsleep_src
+        if self.giant_stand_frames is None:
+            base = self.clips.get("idle") or next(iter(self.clips.values()))
+            out = []
+            for f in base:
+                try:
+                    out.append(f.zoom(GIANT_SCALE))
+                except Exception:
+                    out.append(f)
+            self.giant_stand_frames = out
 
     def summon_giant(self):
         if len(self.giants) >= GIANT_CAP:
@@ -685,56 +776,7 @@ class Pet:
             self.draw_bubble(c, scx, top + self.fh * 0.16)
 
     def draw_bubble(self, c, scx, y_anchor):
-        # 창 폭 안에서 자동 줄바꿈 -> 긴 글도 안 잘림
-        maxw = max(120, self.W - 40)
-        txt = c.create_text(scx, -100, text=self.say_text, anchor="center",
-                            width=maxw, justify="center",
-                            font=("맑은 고딕", 11, "bold"), fill=DARK)
-        bb = c.bbox(txt)
-        bw, bh = bb[2] - bb[0], bb[3] - bb[1]
-        pad = 9
-        x0, x1 = scx - bw / 2 - pad, scx + bw / 2 + pad
-        if x0 < 3:
-            x1 += 3 - x0; x0 = 3
-        if x1 > self.W - 3:
-            x0 -= x1 - (self.W - 3); x1 = self.W - 3
-        y1 = y_anchor
-        y0 = y1 - bh - pad * 2
-        if y0 < 3:
-            d2 = 3 - y0; y0 += d2; y1 += d2
-        cxm = (x0 + x1) / 2
-        c.create_polygon(cxm - 8, y1, cxm + 8, y1, cxm, y1 + 11,
-                         fill="white", outline=DARK, width=2)
-        self.round_rect(x0, y0, x1, y1, 10, fill="white", outline=DARK, width=2)
-        c.create_line(cxm - 8, y1, cxm + 8, y1, fill="white", width=3)
-        c.coords(txt, cxm, (y0 + y1) / 2)
-        c.tag_raise(txt)
-
-    def round_rect(self, x0, y0, x1, y1, r, fill="", outline="", width=1):
-        c = self.canvas
-        c.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90,
-                     style="pieslice", fill=fill, outline=fill)
-        c.create_arc(x1 - 2 * r, y0, x1, y0 + 2 * r, start=0, extent=90,
-                     style="pieslice", fill=fill, outline=fill)
-        c.create_arc(x0, y1 - 2 * r, x0 + 2 * r, y1, start=180, extent=90,
-                     style="pieslice", fill=fill, outline=fill)
-        c.create_arc(x1 - 2 * r, y1 - 2 * r, x1, y1, start=270, extent=90,
-                     style="pieslice", fill=fill, outline=fill)
-        c.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill, outline=fill)
-        c.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill, outline=fill)
-        if outline:
-            c.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90,
-                         style="arc", outline=outline, width=width)
-            c.create_arc(x1 - 2 * r, y0, x1, y0 + 2 * r, start=0, extent=90,
-                         style="arc", outline=outline, width=width)
-            c.create_arc(x0, y1 - 2 * r, x0 + 2 * r, y1, start=180, extent=90,
-                         style="arc", outline=outline, width=width)
-            c.create_arc(x1 - 2 * r, y1 - 2 * r, x1, y1, start=270, extent=90,
-                         style="arc", outline=outline, width=width)
-            c.create_line(x0 + r, y0, x1 - r, y0, fill=outline, width=width)
-            c.create_line(x0 + r, y1, x1 - r, y1, fill=outline, width=width)
-            c.create_line(x0, y0 + r, x0, y1 - r, fill=outline, width=width)
-            c.create_line(x1, y0 + r, x1, y1 - r, fill=outline, width=width)
+        draw_speech_bubble(c, scx, y_anchor, self.say_text, self.W)
 
 
 if __name__ == "__main__":
