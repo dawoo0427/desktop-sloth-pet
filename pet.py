@@ -8,7 +8,7 @@
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
-- 클릭하면 좋아서 폴짝 / 더블클릭하면 AI(Claude)에게 물어보기 / 드래그로 이동 / 우클릭으로 종료
+- 클릭하면 좋아서 폴짝 / 드래그로 이동 / 우클릭으로 종료
 - 실행 시 외부 패키지 불필요(프레임은 build_frames.py로 미리 생성).
 """
 import tkinter as tk
@@ -176,79 +176,6 @@ def resource_dir():
     if getattr(sys, "frozen", False):
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
-
-
-# ---------- AI 비서 (Claude API, 더블클릭으로 물어보기) ----------
-AI_MODEL = "claude-opus-4-8"
-AI_SYSTEM = ("너는 바탕화면 나무늘보 캐릭터 비서야. 한국어로, 군더더기 없이 핵심만 "
-             "간결하게 답해. 사고 과정이나 잡담은 쓰지 말고 최종 답변만 말해.")
-
-
-def _app_dir():
-    """설정파일(api key) 위치. frozen이면 exe 폴더, 아니면 스크립트 폴더(쓰기 가능)."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def load_api_key():
-    """Anthropic API 키: 환경변수 ANTHROPIC_API_KEY 우선, 없으면 anthropic_key.txt."""
-    k = os.environ.get("ANTHROPIC_API_KEY")
-    if k and k.strip():
-        return k.strip()
-    for name in ("anthropic_key.txt", "api_key.txt"):
-        p = os.path.join(_app_dir(), name)
-        try:
-            if os.path.exists(p):
-                with open(p, encoding="utf-8") as f:
-                    s = f.read().strip()
-                if s:
-                    return s
-        except Exception:
-            pass
-    return None
-
-
-def call_claude(question, max_tokens=1024):
-    """질문을 Claude(claude-opus-4-8)에 보내고 (답변, 오류메시지)를 반환. stdlib urllib만 사용."""
-    import urllib.request
-    import urllib.error
-    import json
-    key = load_api_key()
-    if not key:
-        return None, ("API 키가 없어요. 환경변수 ANTHROPIC_API_KEY 를 설정하거나, "
-                      f"{_app_dir()} 에 anthropic_key.txt 파일로 키를 저장해줘.")
-    body = json.dumps({
-        "model": AI_MODEL,
-        "max_tokens": max_tokens,
-        "system": AI_SYSTEM,
-        "messages": [{"role": "user", "content": question}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = json.load(r)
-        parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
-        text = "\n".join(p for p in parts if p).strip()
-        return (text or "(빈 응답)"), None
-    except urllib.error.HTTPError as e:
-        try:
-            err = json.load(e)
-            msg = err.get("error", {}).get("message", f"HTTP {e.code}")
-        except Exception:
-            msg = f"HTTP {e.code}"
-        return None, f"오류: {msg}"
-    except Exception as e:
-        return None, f"오류: {e}"
 
 
 def virtual_screen():
@@ -647,13 +574,9 @@ class Pet:
         self.canvas.bind("<Button-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.canvas.bind("<Double-Button-1>", self.open_ai)   # 더블클릭 -> AI에게 물어보기
         self.canvas.bind("<Button-3>", self.on_right)
 
-        self._ai_win = None          # 열려있는 AI 입력창(중복 방지)
-
         self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="AI에게 물어보기", command=self.open_ai)
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -729,71 +652,6 @@ class Pet:
 
     def on_right(self, e):
         self.menu.tk_popup(e.x_root, e.y_root)
-
-    # ---------- AI 비서 창 (더블클릭) ----------
-    def open_ai(self, e=None):
-        if self._ai_win is not None:                  # 이미 열려있으면 앞으로
-            try:
-                self._ai_win.deiconify(); self._ai_win.lift(); return
-            except Exception:
-                self._ai_win = None
-
-        win = tk.Toplevel(self.root)
-        self._ai_win = win
-        win.title("나무늘보에게 물어보기")
-        win.configure(bg="white")
-        win.geometry("440x340")
-        win.wm_attributes("-topmost", True)
-
-        def _close():
-            self._ai_win = None
-            win.destroy()
-        win.protocol("WM_DELETE_WINDOW", _close)
-
-        tk.Label(win, text="무엇이든 물어봐!  (Enter로 전송)", bg="white",
-                 fg=DARK, font=("맑은 고딕", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
-        entry = tk.Entry(win, font=("맑은 고딕", 11))
-        entry.pack(fill="x", padx=10)
-        entry.focus_set()
-        out = tk.Text(win, wrap="word", font=("맑은 고딕", 10), height=11,
-                      bg="#FBFAF6", relief="flat", padx=8, pady=6)
-        out.pack(fill="both", expand=True, padx=10, pady=8)
-        out.configure(state="disabled")
-
-        def set_out(text):
-            out.configure(state="normal")
-            out.delete("1.0", "end")
-            out.insert("1.0", text)
-            out.configure(state="disabled")
-
-        def submit(_=None):
-            q = entry.get().strip()
-            if not q:
-                return
-            set_out("생각 중...  🦥")
-            entry.configure(state="disabled")
-            holder = {}
-
-            def worker():
-                text, err = call_claude(q)
-                holder["text"], holder["err"] = text, err
-
-            threading.Thread(target=worker, daemon=True).start()
-
-            def poll():
-                if not win.winfo_exists():
-                    return
-                if holder:
-                    entry.configure(state="normal")
-                    set_out(holder.get("text") or holder.get("err") or "(응답 없음)")
-                    entry.selection_range(0, "end")
-                else:
-                    win.after(120, poll)
-            win.after(120, poll)
-
-        entry.bind("<Return>", submit)
-        tk.Button(win, text="물어보기", command=submit,
-                  font=("맑은 고딕", 10)).pack(pady=(0, 10))
 
     # ---------- 무드 ----------
     def set_mood(self, mood, timer=0):
