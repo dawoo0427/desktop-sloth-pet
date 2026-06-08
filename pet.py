@@ -77,18 +77,69 @@ def _korean_city(lat, lon):
         return None
 
 
-def fetch_location():
-    """현재 IP 기반 실제 위치 (도시한글, 위도, 경도) 반환. 실패하면 None.
-    위경도=ip-api.com(무료·키 불필요), 한글 도시명=BigDataCloud 역지오코딩."""
+def _win_location(timeout=6):
+    """Windows 위치 서비스(WiFi 기반)로 (위도, 경도) 반환 — IP보다 정확. 윈도우 전용.
+    위치 서비스 꺼짐/권한 거부/미지원이면 None. (System.Device는 Windows PowerShell에 있음)"""
+    import subprocess
+    ps = (
+        "Add-Type -AssemblyName System.Device;"
+        "$w=New-Object System.Device.Location.GeoCoordinateWatcher;"
+        f"[void]$w.TryStart($false,[TimeSpan]::FromSeconds({timeout}));"
+        f"$n=0; while($w.Position.Location.IsUnknown -and $n -lt {timeout*5})"
+        "{Start-Sleep -Milliseconds 200;$n++};"
+        "$l=$w.Position.Location;"
+        "if(-not $l.IsUnknown){[Console]::Out.Write(('{0},{1}' -f $l.Latitude,$l.Longitude))};"
+        "$w.Stop()"
+    )
     try:
-        d = _get_json("http://ip-api.com/json/?fields=status,city,regionName,lat,lon")
-        if d.get("status") != "success":
-            return None
-        lat, lon = float(d["lat"]), float(d["lon"])
-        city = _korean_city(lat, lon) or d.get("city") or d.get("regionName") or "현재 위치"
-        return city, lat, lon
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=timeout + 8,
+                             creationflags=0x08000000)   # CREATE_NO_WINDOW
+        s = (out.stdout or "").strip()
+        if "," in s:
+            lat, lon = s.split(",")[:2]
+            return float(lat), float(lon)
     except Exception:
+        pass
+    return None
+
+
+def _ip_location():
+    """IP 기반 (위도, 경도). Windows 위치 실패 시 폴백 — 정확도 높은 제공자 우선."""
+    def _ipinfo(d):
+        loc = d.get("loc")
+        if loc and "," in loc:
+            a, b = loc.split(",")[:2]
+            return float(a), float(b)
         return None
+    providers = [
+        ("https://ipinfo.io/json", _ipinfo),
+        ("https://ipapi.co/json/",
+         lambda d: (float(d["latitude"]), float(d["longitude"])) if d.get("latitude") is not None else None),
+        ("http://ip-api.com/json/?fields=status,lat,lon",
+         lambda d: (float(d["lat"]), float(d["lon"])) if d.get("status") == "success" else None),
+    ]
+    for url, parse in providers:
+        try:
+            r = parse(_get_json(url))
+            if r:
+                return r
+        except Exception:
+            continue
+    return None
+
+
+def fetch_location():
+    """현재 실제 위치 (도시한글, 위도, 경도) 반환. 실패하면 None.
+    1) Windows 위치 서비스(WiFi, 정확)  2) IP 기반 폴백. 한글 도시명=BigDataCloud 역지오코딩."""
+    coord = _win_location() or _ip_location()
+    if not coord:
+        return None
+    lat, lon = coord
+    city = _korean_city(lat, lon) or "현재 위치"
+    for suf in ("특별자치시", "특별자치도", "특별시", "광역시"):   # 서울특별시 -> 서울
+        city = city.replace(suf, "")
+    return city, lat, lon
 
 
 def fetch_weather(loc=None):
