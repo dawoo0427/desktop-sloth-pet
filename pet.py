@@ -563,7 +563,8 @@ class Pet:
         self._weather_result = None      # 스레드가 채우면 메인 루프가 말풍선으로 출력
         self.weather_cache = ""          # 최근 조회 결과(가끔 혼잣말로 알려줌)
         self.weather_cache_time = 0.0
-        self._loc = None                 # IP 기반 실제 위치 캐시(한 번만 조회)
+        self._loc = None                 # 실제 위치 캐시(한 번만 조회)
+        self._weather_greet = False      # 이번 조회가 시작 인사인지
 
         # 드래그
         self.dragging = False
@@ -578,6 +579,8 @@ class Pet:
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
+        # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
+        self.root.after(1800, lambda: self.request_weather(greet=True))
         self.loop()
         self.root.mainloop()
         self._unregister()          # 종료 시 위치 공유 파일 정리
@@ -604,13 +607,17 @@ class Pet:
         self.say_timer = 90
         self.say_cooldown = random.randint(180, 420)
 
-    # ---------- 날씨 (Ctrl+9) ----------
-    def request_weather(self):
-        """대한민국 날씨를 백그라운드 스레드로 조회. tkinter 루프는 안 멈춤."""
+    # ---------- 날씨 (Ctrl+9 / 시작 인사) ----------
+    GREET_TAILS = ["좋은 하루 보내!", "오늘도 화이팅!", "행복한 하루 되길~", "천천히 가도 괜찮아~"]
+
+    def request_weather(self, greet=False):
+        """현재 위치 날씨를 백그라운드 스레드로 조회. tkinter 루프는 안 멈춤.
+        greet=True면 시작 인사용(끝에 응원 한마디 덧붙임)."""
         if self._weather_loading:
             return
         self._weather_loading = True
-        self.say(text="대한민국 날씨 확인 중...")
+        self._weather_greet = greet
+        self.say(text="오늘 날씨 살펴보는 중..." if greet else "현재 위치 날씨 확인 중...")
         threading.Thread(target=self._weather_worker, daemon=True).start()
 
     def _weather_worker(self):
@@ -620,9 +627,9 @@ class Pet:
         if txt:
             self.weather_cache = txt
             self.weather_cache_time = time.time()
-            self._weather_result = txt
+            self._weather_result = (txt + " — " + random.choice(self.GREET_TAILS)) if self._weather_greet else txt
         else:
-            self._weather_result = "날씨를 못 가져왔어… 인터넷 확인해줄래?"
+            self._weather_result = None if self._weather_greet else "날씨를 못 가져왔어… 인터넷 확인해줄래?"
         self._weather_loading = False
 
     # ---------- 입력 ----------
