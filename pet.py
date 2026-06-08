@@ -8,8 +8,10 @@
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
-- 클릭하면 배 아래 말풍선 검색창 -> 검색 결과를 머리 위 말풍선으로 / 드래그로 이동 / 우클릭 메뉴
-  (검색: 구글 AI=Gemini 구글검색 그라운딩만 사용. 우클릭 'Gemini 키 설정'에서 무료 키 입력)
+- 클릭하면 배 아래 말풍선 입력창 -> 구글 AI(Gemini)가 맥락을 파악:
+  질문이면 답을 머리 위 말풍선으로 / 문서 요청이면 .txt, 표·엑셀 요청이면 .xlsx 를
+  '다운로드\\나무늘보작업물' 폴더에 저장하고 바로 열어줌 (우클릭 'Gemini 키 설정'에서 무료 키)
+- 드래그로 이동 / 우클릭 메뉴
 - 실행 시 외부 패키지 불필요(프레임은 build_frames.py로 미리 생성).
 """
 import tkinter as tk
@@ -170,8 +172,26 @@ def fetch_weather(loc=None):
 
 
 # ---------- 구글 AI(Gemini) 검색 — 키 있으면 사용, 없으면 위키백과로 폴백 ----------
-GEMINI_MODEL = "gemini-2.5-flash"   # 무료 등급 + 구글 검색 그라운딩 지원
-GEMINI_SYSTEM = "너는 친절한 검색 비서야. 한국어로 군더더기 없이 2~3문장으로 핵심만 정확히 답해."
+GEMINI_MODEL = "gemini-2.5-flash"          # 답변/문서/표 — 맥락 파악
+GEMINI_COMPOSE_SYSTEM = (
+    "너는 데스크탑 나무늘보 비서야. 사용자 입력의 의도를 파악해서 지정된 JSON으로만 답해.\n"
+    "- 단순 질문/대화면 action='answer', reply에 한국어로 2~4문장 핵심 답변.\n"
+    "- 문서/보고서/글/편지/계획서 등 작성 요청이면 action='document', title에 짧은 제목, "
+    "text에 별표(*)·해시(#) 같은 마크다운 기호 없는 읽기 쉬운 평문 문서 전체, reply에 한 줄 안내.\n"
+    "- 표/엑셀/스프레드시트/시간표/명단/목록표 요청이면 action='spreadsheet', title에 제목, "
+    "rows에 2차원 문자열 배열(첫 행은 머리글), reply에 한 줄 안내."
+)
+GEMINI_COMPOSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["answer", "document", "spreadsheet"]},
+        "title": {"type": "string"},
+        "reply": {"type": "string"},
+        "text": {"type": "string"},
+        "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+    },
+    "required": ["action", "reply"],
+}
 
 
 def _app_dir():
@@ -226,44 +246,182 @@ def save_gemini_key(key):
         return False
 
 
-def gemini_search(query, key):
-    """Gemini(구글 AI) + 구글 검색 그라운딩으로 답변. 실패 시 None. (stdlib urllib만 사용)"""
+def _gemini_call(prompt_text, key, tools=None, gen_config=None, model=GEMINI_MODEL, timeout=90):
+    """Gemini generateContent 호출 -> 응답 candidate의 parts 리스트 반환. 실패 시 None.
+    서버 일시오류(500/503)는 1회 재시도. (HTTP 오류는 호출측에서 처리)"""
     import urllib.request
+    import urllib.error
     import json
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent")
-    prompt = f"{GEMINI_SYSTEM}\n\n질문: {query}"
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"google_search": {}}],
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST", headers={
-        "x-goog-api-key": key,
-        "Content-Type": "application/json",
-    })
+           f"{model}:generateContent")
+    body = {"contents": [{"parts": [{"text": prompt_text}]}]}
+    if tools:
+        body["tools"] = tools
+    if gen_config:
+        body["generationConfig"] = gen_config
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                 headers={"x-goog-api-key": key, "Content-Type": "application/json"})
+    data = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (500, 503) and attempt == 0:
+                time.sleep(1.5)
+                continue
+            raise
+    cands = (data or {}).get("candidates") or []
+    if not cands:
+        return None
+    return cands[0].get("content", {}).get("parts", []) or []
+
+
+def gemini_compose(prompt, key):
+    """말풍선 입력을 구글 AI가 해석 -> dict{action,title,reply,text,rows}. 실패 시 None.
+    (네트워크/HTTP 오류는 호출측에서 처리)"""
+    import json
+    gen = {
+        "responseMimeType": "application/json",
+        "responseSchema": GEMINI_COMPOSE_SCHEMA,
+        "maxOutputTokens": 4096,
+    }
+    parts = _gemini_call(f"{GEMINI_COMPOSE_SYSTEM}\n\n사용자: {prompt}", key, gen_config=gen)
+    if not parts:
+        return None
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+    if not text:
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.load(r)
-        cands = data.get("candidates") or []
-        if not cands:
-            return None
-        parts = cands[0].get("content", {}).get("parts", []) or []
-        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
-        return text or None
+        return json.loads(text)
     except Exception:
         return None
 
 
-def web_search(query):
-    """검색: 구글 AI(Gemini, 구글 검색 그라운딩)만 사용. 키 없거나 실패 시 None.
-    (stdlib urllib만 사용)"""
-    q = (query or "").strip()
+def write_xlsx(path, rows):
+    """외부 패키지 없이 진짜 .xlsx(OOXML zip) 생성. rows=2차원 리스트(문자열)."""
+    import zipfile
+
+    def esc(s):
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    def colname(n):                      # 1->A, 2->B, ... 27->AA
+        name = ""
+        while n > 0:
+            n, r = divmod(n - 1, 26)
+            name = chr(65 + r) + name
+        return name
+
+    body = []
+    for ri, row in enumerate(rows, 1):
+        cells = []
+        for ci, val in enumerate(row, 1):
+            cells.append('<c r="%s%d" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>'
+                         % (colname(ci), ri, esc(val)))
+        body.append('<row r="%d">%s</row>' % (ri, "".join(cells)))
+    sheet = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             '<sheetData>%s</sheetData></worksheet>' % "".join(body))
+    content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                     '<Default Extension="xml" ContentType="application/xml"/>'
+                     '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                     '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                     '</Types>')
+    root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                 '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                 '</Relationships>')
+    workbook = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+               '</Relationships>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def artifact_dir():
+    """작업물 저장 폴더(다운로드\\나무늘보작업물). 항상 생성."""
+    d = os.path.join(os.path.expanduser("~"), "Downloads", "나무늘보작업물")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _slug(s):
+    s = "".join(ch for ch in (s or "") if ch not in '\\/:*?"<>|\n\r\t').strip()
+    return s[:24] or "작업물"
+
+
+def _save_doc(title, text):
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(artifact_dir(), f"{_slug(title)}_{ts}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
+
+
+def _save_xlsx(title, rows):
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(artifact_dir(), f"{_slug(title)}_{ts}.xlsx")
+    write_xlsx(path, rows)
+    return path
+
+
+def process_bubble(prompt):
+    """말풍선 입력을 구글 AI가 해석 -> (말풍선에 표시할 텍스트, 생성한 파일경로 or None).
+    질문이면 답변만, 문서/표 요청이면 파일을 만들어 다운로드 폴더에 저장."""
+    import urllib.error
+    q = (prompt or "").strip()
     if not q:
-        return None
+        return None, None
     key = load_gemini_key()
     if not key:
-        return None
-    return gemini_search(q, key)
+        return "구글 AI 키가 필요해! 우클릭 → 'Gemini 키 설정'에서 무료 키를 넣어줘.", None
+    try:
+        data = gemini_compose(q, key)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return "무료 사용 한도를 초과했어요. 잠시 후 다시 시도해줄래?", None
+        return f"구글 AI 오류(HTTP {e.code})", None
+    except Exception as ex:
+        return f"오류: {ex}", None
+    if not data:
+        return "흐음, 답을 못 받았어. 다시 물어봐줄래?", None
+    action = data.get("action")
+    reply = (data.get("reply") or "").strip()
+    if action == "document":
+        text = (data.get("text") or "").strip()
+        if not text:
+            return (reply or "문서 내용을 못 만들었어."), None
+        try:
+            path = _save_doc(data.get("title") or q, text)
+        except Exception as ex:
+            return f"문서 저장 오류: {ex}", None
+        return (reply or "문서 만들었어! 다운로드 폴더에 저장했어 :)"), path
+    if action == "spreadsheet":
+        rows = [[str(c) for c in row] for row in (data.get("rows") or []) if isinstance(row, list)]
+        if not rows:
+            return (reply or "표 데이터를 못 만들었어."), None
+        try:
+            path = _save_xlsx(data.get("title") or q, rows)
+        except Exception as ex:
+            return f"엑셀 저장 오류: {ex}", None
+        return (reply or "엑셀 표 만들었어! 다운로드 폴더에 저장했어 :)"), path
+    return (reply or "음, 잘 모르겠어."), None
 
 
 GIANT_SCALE = 2            # Ctrl+0 거대 나무늘보 배율(기존 20에서 1/10로 축소)
@@ -695,8 +853,8 @@ class Pet:
         self.canvas.bind("<Button-3>", self.on_right)
 
         self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="검색하기", command=self.toggle_search)
-        self.menu.add_command(label="Gemini 키 설정(구글 AI 검색)", command=self.set_gemini_key)
+        self.menu.add_command(label="물어보기 / 문서·표 만들기", command=self.toggle_search)
+        self.menu.add_command(label="Gemini 키 설정(구글 AI)", command=self.set_gemini_key)
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -768,6 +926,7 @@ class Pet:
         self.x = px - self.grab_dx
         self.y = py - self.grab_dy
         self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
+        self._reposition_search()           # 검색창도 같이 따라오게
 
     def on_release(self, e):
         self.dragging = False
@@ -812,7 +971,7 @@ class Pet:
         e.bind("<Return>", save)
         tk.Button(win, text="저장", command=save, font=("맑은 고딕", 10)).pack(pady=(2, 10))
 
-    # ---------- 검색 (배에 말풍선 검색창 / 결과는 머리 위 말풍선) ----------
+    # ---------- 말풍선 입력 (질문/문서/표를 AI가 맥락 파악해 처리) ----------
     def toggle_search(self):
         if self._search_win is not None:
             self.close_search()
@@ -826,6 +985,7 @@ class Pet:
         self.set_mood("happy", 30)
         self.vx = self.vy = 0.0
         sw, sh = 280, 76
+        self._search_w = sw                 # 드래그 시 따라오게 재배치용
         cx = self.x + self.W / 2
         anchor_y = self.y + self.base_top + self.fh * 0.74   # 배 아래쪽(꼬리가 위로 배를 가리킴)
         win = tk.Toplevel(self.root)
@@ -850,7 +1010,19 @@ class Pet:
         entry.bind("<Escape>", lambda ev: self.close_search())
         entry.focus_force()
         self._search_entry = entry
-        self.say(text="무엇이든 찾아줄게! 입력하고 Enter~")
+        self.say(text="무엇이든! 질문·문서·엑셀표 다 돼 (Enter)")
+
+    def _reposition_search(self):
+        """검색창이 열려 있으면 나무늘보 배 아래로 위치를 다시 맞춤(드래그/복귀 시 따라오게)."""
+        if self._search_win is None:
+            return
+        sw = getattr(self, "_search_w", 280)
+        cx = self.x + self.W / 2
+        anchor_y = self.y + self.base_top + self.fh * 0.74
+        try:
+            self._search_win.geometry(f"+{int(cx - sw / 2)}+{int(anchor_y)}")
+        except Exception:
+            pass
 
     def close_search(self):
         if self._search_win is not None:
@@ -871,26 +1043,29 @@ class Pet:
             self.say(text="구글 AI 키가 필요해! 우클릭 → 'Gemini 키 설정'에서 무료 키를 넣어줘.")
             self.say_timer = 360
             return
-        self.say(text=f"'{q}' 구글 AI로 찾는 중...")
+        self.say(text="알겠어 조금만 기다려봐~")
         holder = {}
 
         def worker():
-            holder["r"] = web_search(q)
+            holder["res"] = process_bubble(q)   # (말풍선텍스트, 파일경로 or None)
 
         threading.Thread(target=worker, daemon=True).start()
 
         def poll():
-            if "r" not in holder:
+            if "res" not in holder:
                 self.root.after(150, poll)
                 return
-            r = holder["r"]
-            if r:
-                if len(r) > 220:
-                    r = r[:217] + "…"
-                self.say(text=r)
-                self.say_timer = 360         # 결과는 오래 보여줌
-            else:
-                self.say(text="흐음, 답을 못 받았어. 키/한도를 확인하거나 다시 물어봐줄래?")
+            text, path = holder["res"]
+            text = text or "음, 잘 모르겠어."
+            if len(text) > 220:
+                text = text[:217] + "…"
+            self.say(text=text)
+            self.say_timer = 360             # 오래 보여줌
+            if path:
+                try:
+                    os.startfile(path)       # 만든 문서/엑셀 바로 열기(윈도우)
+                except Exception:
+                    pass
         self.root.after(150, poll)
 
     # ---------- 무드 ----------
@@ -923,6 +1098,7 @@ class Pet:
         except Exception:
             pass
         self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
+        self._reposition_search()           # 검색창 열려있으면 같이 이동
 
     # ---------- 메인 루프 (60fps: 애니메이션은 매 틱, 이동/물리는 30fps로 게이트) ----------
     def loop(self):
