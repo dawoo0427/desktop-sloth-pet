@@ -8,8 +8,8 @@
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
-- 클릭하면 배에 말풍선 검색창 -> 검색 결과를 머리 위 말풍선으로 / 드래그로 이동 / 우클릭 메뉴
-  (검색 소스: 한국어 위키백과 + DuckDuckGo, 둘 다 무료·API키 불필요)
+- 클릭하면 배 아래 말풍선 검색창 -> 검색 결과를 머리 위 말풍선으로 / 드래그로 이동 / 우클릭 메뉴
+  (검색: 구글 AI=Gemini 구글검색 그라운딩만 사용. 우클릭 'Gemini 키 설정'에서 무료 키 입력)
 - 실행 시 외부 패키지 불필요(프레임은 build_frames.py로 미리 생성).
 """
 import tkinter as tk
@@ -169,44 +169,101 @@ def fetch_weather(loc=None):
         return None
 
 
+# ---------- 구글 AI(Gemini) 검색 — 키 있으면 사용, 없으면 위키백과로 폴백 ----------
+GEMINI_MODEL = "gemini-2.5-flash"   # 무료 등급 + 구글 검색 그라운딩 지원
+GEMINI_SYSTEM = "너는 친절한 검색 비서야. 한국어로 군더더기 없이 2~3문장으로 핵심만 정확히 답해."
+
+
+def _app_dir():
+    """스크립트/exe가 있는 폴더(파워유저가 키 파일을 옆에 둘 때)."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _config_dir():
+    """항상 쓰기 가능한 사용자 설정 폴더(%APPDATA%\\DesktopSlothPet). 키 저장용."""
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "DesktopSlothPet")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def load_gemini_key():
+    """Gemini 키: 환경변수(GEMINI_API_KEY/GOOGLE_API_KEY) 우선, 없으면 설정폴더/스크립트폴더의 키 파일."""
+    for env in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        v = os.environ.get(env)
+        if v and v.strip():
+            return v.strip()
+    for d in (_config_dir(), _app_dir()):
+        for name in ("gemini_key.txt", "google_key.txt"):
+            p = os.path.join(d, name)
+            try:
+                if os.path.exists(p):
+                    with open(p, encoding="utf-8") as f:
+                        s = f.read().strip()
+                    if s:
+                        return s
+            except Exception:
+                pass
+    return None
+
+
+def save_gemini_key(key):
+    """키를 설정폴더에 저장(빈 값이면 삭제). 성공 시 True."""
+    p = os.path.join(_config_dir(), "gemini_key.txt")
+    try:
+        if key and key.strip():
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(key.strip())
+        elif os.path.exists(p):
+            os.remove(p)
+        return True
+    except Exception:
+        return False
+
+
+def gemini_search(query, key):
+    """Gemini(구글 AI) + 구글 검색 그라운딩으로 답변. 실패 시 None. (stdlib urllib만 사용)"""
+    import urllib.request
+    import json
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{GEMINI_MODEL}:generateContent")
+    prompt = f"{GEMINI_SYSTEM}\n\n질문: {query}"
+    body = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "tools": [{"google_search": {}}],
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "x-goog-api-key": key,
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+        cands = data.get("candidates") or []
+        if not cands:
+            return None
+        parts = cands[0].get("content", {}).get("parts", []) or []
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+        return text or None
+    except Exception:
+        return None
+
+
 def web_search(query):
-    """무료·API키 불필요 검색. 1) 한국어 위키백과 요약 2) DuckDuckGo Instant Answer 폴백.
-    결과 문자열 반환, 못 찾으면 None. (stdlib urllib만 사용)"""
-    import urllib.parse
+    """검색: 구글 AI(Gemini, 구글 검색 그라운딩)만 사용. 키 없거나 실패 시 None.
+    (stdlib urllib만 사용)"""
     q = (query or "").strip()
     if not q:
         return None
-    # 1) 한국어 위키백과 — 검색 1순위 문서의 도입부 요약(2문장)
-    try:
-        params = urllib.parse.urlencode({
-            "format": "json", "action": "query", "generator": "search",
-            "gsrsearch": q, "gsrlimit": 1, "prop": "extracts",
-            "exintro": 1, "explaintext": 1, "exsentences": 2,
-        })
-        d = _get_json("https://ko.wikipedia.org/w/api.php?" + params)
-        for p in (d.get("query", {}).get("pages", {}) or {}).values():
-            ext = (p.get("extract") or "").strip()
-            if ext:
-                title = p.get("title", "")
-                return f"{title}: {ext}" if title else ext
-    except Exception:
-        pass
-    # 2) DuckDuckGo Instant Answer 폴백(정의/즉답형)
-    try:
-        params = urllib.parse.urlencode({"q": q, "format": "json", "no_html": 1, "t": "sloth"})
-        d = _get_json("https://api.duckduckgo.com/?" + params)
-        for key in ("AbstractText", "Answer", "Definition"):
-            v = (d.get(key) or "").strip()
-            if v:
-                return v
-        for it in (d.get("RelatedTopics") or []):
-            if isinstance(it, dict):
-                t = (it.get("Text") or "").strip()
-                if t:
-                    return t
-    except Exception:
-        pass
-    return None
+    key = load_gemini_key()
+    if not key:
+        return None
+    return gemini_search(q, key)
 
 
 GIANT_SCALE = 2            # Ctrl+0 거대 나무늘보 배율(기존 20에서 1/10로 축소)
@@ -639,6 +696,7 @@ class Pet:
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="검색하기", command=self.toggle_search)
+        self.menu.add_command(label="Gemini 키 설정(구글 AI 검색)", command=self.set_gemini_key)
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -720,6 +778,40 @@ class Pet:
     def on_right(self, e):
         self.menu.tk_popup(e.x_root, e.y_root)
 
+    # ---------- Gemini(구글 AI) 키 설정 ----------
+    def set_gemini_key(self):
+        win = tk.Toplevel(self.root)
+        win.title("Gemini API 키 설정")
+        win.configure(bg="white")
+        win.geometry("470x180")
+        win.wm_attributes("-topmost", True)
+        tk.Label(win, bg="white", fg=DARK, justify="left", font=("맑은 고딕", 9),
+                 text=("구글 AI(Gemini) 검색을 쓰려면 무료 API 키가 필요해요.\n"
+                       "aistudio.google.com → 'Get API key'에서 무료 발급 후\n"
+                       "아래에 붙여넣고 저장하세요. (키 없으면 위키백과로 동작)")
+                 ).pack(anchor="w", padx=12, pady=(10, 6))
+        e = tk.Entry(win, font=("맑은 고딕", 10), show="•")
+        cur = load_gemini_key()
+        if cur:
+            e.insert(0, cur)
+        e.pack(fill="x", padx=12)
+        e.focus_set()
+        msg = tk.Label(win, text="", bg="white", fg=DARK, font=("맑은 고딕", 9))
+        msg.pack(pady=4)
+
+        def save(_=None):
+            k = e.get().strip()
+            ok = save_gemini_key(k)
+            if not ok:
+                msg.config(text="저장 실패 — 폴더 권한을 확인해줘.")
+            elif k:
+                msg.config(text="저장됐어요! 이제 검색이 구글 AI로 동작해요.")
+            else:
+                msg.config(text="키를 비웠어요 — 위키백과로 동작해요.")
+
+        e.bind("<Return>", save)
+        tk.Button(win, text="저장", command=save, font=("맑은 고딕", 10)).pack(pady=(2, 10))
+
     # ---------- 검색 (배에 말풍선 검색창 / 결과는 머리 위 말풍선) ----------
     def toggle_search(self):
         if self._search_win is not None:
@@ -775,7 +867,11 @@ class Pet:
         self.close_search()
         if not q:
             return
-        self.say(text=f"'{q}' 찾아보는 중...")
+        if not load_gemini_key():           # 구글 AI만 사용 — 키 없으면 안내
+            self.say(text="구글 AI 키가 필요해! 우클릭 → 'Gemini 키 설정'에서 무료 키를 넣어줘.")
+            self.say_timer = 360
+            return
+        self.say(text=f"'{q}' 구글 AI로 찾는 중...")
         holder = {}
 
         def worker():
@@ -794,7 +890,7 @@ class Pet:
                 self.say(text=r)
                 self.say_timer = 360         # 결과는 오래 보여줌
             else:
-                self.say(text="흐음, 못 찾았어. 다르게 물어봐줄래?")
+                self.say(text="흐음, 답을 못 받았어. 키/한도를 확인하거나 다시 물어봐줄래?")
         self.root.after(150, poll)
 
     # ---------- 무드 ----------
