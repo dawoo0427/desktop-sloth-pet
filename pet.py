@@ -8,7 +8,8 @@
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
-- 클릭하면 좋아서 폴짝 / 드래그로 이동 / 우클릭으로 종료
+- 클릭하면 배에 말풍선 검색창 -> 검색 결과를 머리 위 말풍선으로 / 드래그로 이동 / 우클릭 메뉴
+  (검색 소스: 한국어 위키백과 + DuckDuckGo, 둘 다 무료·API키 불필요)
 - 실행 시 외부 패키지 불필요(프레임은 build_frames.py로 미리 생성).
 """
 import tkinter as tk
@@ -166,6 +167,48 @@ def fetch_weather(loc=None):
         return f"{city} {desc} {temp}°C (바람 {wind}km/h)"
     except Exception:
         return None
+
+
+def web_search(query):
+    """무료·API키 불필요 검색. 1) 한국어 위키백과 요약 2) DuckDuckGo Instant Answer 폴백.
+    결과 문자열 반환, 못 찾으면 None. (stdlib urllib만 사용)"""
+    import urllib.parse
+    q = (query or "").strip()
+    if not q:
+        return None
+    # 1) 한국어 위키백과 — 검색 1순위 문서의 도입부 요약(2문장)
+    try:
+        params = urllib.parse.urlencode({
+            "format": "json", "action": "query", "generator": "search",
+            "gsrsearch": q, "gsrlimit": 1, "prop": "extracts",
+            "exintro": 1, "explaintext": 1, "exsentences": 2,
+        })
+        d = _get_json("https://ko.wikipedia.org/w/api.php?" + params)
+        for p in (d.get("query", {}).get("pages", {}) or {}).values():
+            ext = (p.get("extract") or "").strip()
+            if ext:
+                title = p.get("title", "")
+                return f"{title}: {ext}" if title else ext
+    except Exception:
+        pass
+    # 2) DuckDuckGo Instant Answer 폴백(정의/즉답형)
+    try:
+        params = urllib.parse.urlencode({"q": q, "format": "json", "no_html": 1, "t": "sloth"})
+        d = _get_json("https://api.duckduckgo.com/?" + params)
+        for key in ("AbstractText", "Answer", "Definition"):
+            v = (d.get(key) or "").strip()
+            if v:
+                return v
+        for it in (d.get("RelatedTopics") or []):
+            if isinstance(it, dict):
+                t = (it.get("Text") or "").strip()
+                if t:
+                    return t
+    except Exception:
+        pass
+    return None
+
+
 GIANT_SCALE = 2            # Ctrl+0 거대 나무늘보 배율(기존 20에서 1/10로 축소)
 GIANT_CAP = 6             # 한 프로세스에서 소환 가능한 거대 나무늘보 최대 수
 DOUBLE_0_WINDOW = 0.40    # Ctrl+0 더블탭(=ctrl+00, 눕힘 토글) 인식 시간(초)
@@ -411,6 +454,16 @@ class GiantSloth:
         if slow:
             self.t += 1
             self._talk()
+            if self.t % 90 == 0:          # 화면 밖 사라짐 방지(모니터 구성 변경/최상위 가로채기)
+                try:
+                    self.win.wm_attributes("-topmost", True)
+                    self.win.lift()
+                except Exception:
+                    pass
+                self.x = max(app.vsx - self.win_w * 0.25,
+                             min(app.vsx + app.vsw - self.win_w * 0.75, self.x))
+                self.y = max(app.vsy, min(app.vsy + app.vsh - self.win_h, self.y))
+                self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
             if self.mood_timer > 0:
                 self.mood_timer -= 1
             if not self.dragging and not self.lying and not app.frozen:
@@ -566,10 +619,18 @@ class Pet:
         self._loc = None                 # 실제 위치 캐시(한 번만 조회)
         self._weather_greet = False      # 이번 조회가 시작 인사인지
 
-        # 드래그
+        # 드래그 / 클릭 판정
         self.dragging = False
         self.grab_dx = 0
         self.grab_dy = 0
+        self._press_x = 0
+        self._press_y = 0
+        self._moved = False
+
+        # 검색 (클릭 -> 배에 말풍선 검색창, 결과는 머리 위 말풍선)
+        self.searching = False
+        self._search_win = None
+        self._search_entry = None
 
         self.canvas.bind("<Button-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
@@ -577,6 +638,7 @@ class Pet:
         self.canvas.bind("<Button-3>", self.on_right)
 
         self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu.add_command(label="검색하기", command=self.toggle_search)
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -637,21 +699,103 @@ class Pet:
         self.dragging = True
         self.grab_dx = self.root.winfo_pointerx() - self.x
         self.grab_dy = self.root.winfo_pointery() - self.y
-        self.set_mood("happy", 46)      # 클릭 -> 좋아서 폴짝
-        self.hop_v = -7
-        self.say("happy")
+        self._press_x = self.root.winfo_pointerx()
+        self._press_y = self.root.winfo_pointery()
+        self._moved = False
 
     def on_drag(self, e):
-        self.x = self.root.winfo_pointerx() - self.grab_dx
-        self.y = self.root.winfo_pointery() - self.grab_dy
+        px, py = self.root.winfo_pointerx(), self.root.winfo_pointery()
+        if abs(px - self._press_x) > 4 or abs(py - self._press_y) > 4:
+            self._moved = True
+        self.x = px - self.grab_dx
+        self.y = py - self.grab_dy
         self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
 
     def on_release(self, e):
         self.dragging = False
         self.vx = self.vy = 0.0
+        if not self._moved:             # 끌지 않은 '클릭' -> 검색창 토글
+            self.toggle_search()
 
     def on_right(self, e):
         self.menu.tk_popup(e.x_root, e.y_root)
+
+    # ---------- 검색 (배에 말풍선 검색창 / 결과는 머리 위 말풍선) ----------
+    def toggle_search(self):
+        if self._search_win is not None:
+            self.close_search()
+        else:
+            self.open_search()
+
+    def open_search(self):
+        if self._search_win is not None:
+            return
+        self.searching = True               # 입력하는 동안 배회 정지(자리 고정)
+        self.set_mood("happy", 30)
+        self.vx = self.vy = 0.0
+        sw, sh = 280, 76
+        cx = self.x + self.W / 2
+        anchor_y = self.y + self.base_top + self.fh * 0.74   # 배 아래쪽(꼬리가 위로 배를 가리킴)
+        win = tk.Toplevel(self.root)
+        self._search_win = win
+        win.overrideredirect(True)
+        win.wm_attributes("-topmost", True)
+        try:
+            win.wm_attributes("-transparentcolor", TRANSPARENT)
+        except tk.TclError:
+            pass
+        win.geometry(f"{sw}x{sh}+{int(cx - sw / 2)}+{int(anchor_y)}")
+        c = tk.Canvas(win, width=sw, height=sh, bg=TRANSPARENT, highlightthickness=0)
+        c.pack()
+        _round_rect(c, 6, 18, sw - 6, sh - 6, 14, fill="white", outline=DARK, width=2)
+        c.create_polygon(sw / 2 - 9, 19, sw / 2 + 9, 19, sw / 2, 4,       # 위로 향한 꼬리
+                         fill="white", outline=DARK, width=2)
+        c.create_line(sw / 2 - 9, 19, sw / 2 + 9, 19, fill="white", width=3)
+        entry = tk.Entry(win, font=("맑은 고딕", 12), relief="flat", justify="center",
+                         bg="white", fg=DARK, highlightthickness=0, bd=0)
+        c.create_window(sw / 2, (18 + sh) / 2 + 1, window=entry, width=sw - 40, height=28)
+        entry.bind("<Return>", self._search_submit)
+        entry.bind("<Escape>", lambda ev: self.close_search())
+        entry.focus_force()
+        self._search_entry = entry
+        self.say(text="무엇이든 찾아줄게! 입력하고 Enter~")
+
+    def close_search(self):
+        if self._search_win is not None:
+            try:
+                self._search_win.destroy()
+            except Exception:
+                pass
+        self._search_win = None
+        self._search_entry = None
+        self.searching = False
+
+    def _search_submit(self, e=None):
+        q = self._search_entry.get().strip() if self._search_entry else ""
+        self.close_search()
+        if not q:
+            return
+        self.say(text=f"'{q}' 찾아보는 중...")
+        holder = {}
+
+        def worker():
+            holder["r"] = web_search(q)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            if "r" not in holder:
+                self.root.after(150, poll)
+                return
+            r = holder["r"]
+            if r:
+                if len(r) > 220:
+                    r = r[:217] + "…"
+                self.say(text=r)
+                self.say_timer = 360         # 결과는 오래 보여줌
+            else:
+                self.say(text="흐음, 못 찾았어. 다르게 물어봐줄래?")
+        self.root.after(150, poll)
 
     # ---------- 무드 ----------
     def set_mood(self, mood, timer=0):
@@ -667,6 +811,23 @@ class Pet:
             elif mood == "curious" and random.random() < 0.4:
                 self.say("curious")
 
+    # ---------- 화면 밖 사라짐 방지 (모니터 절전/해제·해상도 변경·최상위 가로채기) ----------
+    def _refresh_on_screen(self):
+        """가상 화면을 다시 구해 보이는 영역으로 끌어오고, '항상 위'를 재설정한다.
+        시작 시 한 번 구한 vsx/vsw가 모니터 구성 변경으로 낡으면 펫이 사라진 모니터/
+        화면 밖에 남는데(=사라짐), 주기적으로 호출해 현재 화면 안으로 되돌린다."""
+        vs = virtual_screen()
+        if vs:
+            self.vsx, self.vsy, self.vsw, self.vsh = vs
+        self.x = max(self.vsx - 30, min(self.vsx + self.vsw - self.W + 30, self.x))
+        self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
+        try:
+            self.root.wm_attributes("-topmost", True)   # 다른 앱이 가로챈 최상위 복구
+            self.root.lift()
+        except Exception:
+            pass
+        self.root.geometry(f"+{int(self.x)}+{int(self.y)}")
+
     # ---------- 메인 루프 (60fps: 애니메이션은 매 틱, 이동/물리는 30fps로 게이트) ----------
     def loop(self):
         self.tick += 1
@@ -675,8 +836,10 @@ class Pet:
 
         if slow:
             self.t += 1
-            # 정지 중이거나 드래그 중이면 (메인 펫) 이동 로직 건너뜀
-            if not self.dragging and not self.frozen:
+            if self.t % 90 == 0:      # 약 3초마다 화면 안으로 + 항상 위 재설정
+                self._refresh_on_screen()
+            # 정지/드래그/검색 중이면 (메인 펫) 이동 로직 건너뜀
+            if not self.dragging and not self.frozen and not self.searching:
                 if self.follow_on:
                     px = self.root.winfo_pointerx()
                     py = self.root.winfo_pointery()
