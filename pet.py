@@ -3,7 +3,7 @@
 데스크탑 펫 (Desktop Pet) - 나무늘보
 - 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
 - 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
-- 키: Ctrl=마우스 따라오기 토글 / Ctrl+1=제자리 정지 토글
+- 키: Ctrl=마우스 따라오기 토글 / Ctrl+1=제자리 정지 토글 / Ctrl+9=대한민국 날씨 알려주기
 - Ctrl+0=거대 나무늘보 소환(독립 창, 우측하단 누운 모습, 여러 마리 가능) / Ctrl+00(더블탭)=눕힘<->일어서기
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
@@ -20,6 +20,7 @@ import glob
 import time
 import atexit
 import tempfile
+import threading
 
 TRANSPARENT = "magenta"   # 이 색은 화면에서 투명 처리됨 (프레임 배경색)
 FRAME_DIR = "frames"
@@ -35,7 +36,44 @@ def key_down(vk):
 
 
 VK_CONTROL, VK_LCTRL, VK_RCTRL = 0x11, 0xA2, 0xA3
-VK_0, VK_1 = 0x30, 0x31
+VK_0, VK_1, VK_9 = 0x30, 0x31, 0x39
+
+
+# 대한민국 날씨 (Open-Meteo, 무료·API키 불필요). 기본 도시=서울.
+WEATHER_CITY = "서울"
+WEATHER_LAT, WEATHER_LON = 37.5665, 126.9780
+# WMO 날씨 코드 -> 한글 설명 (Tkinter가 이모지를 흑백으로만 그려서 글자만 사용)
+WEATHER_CODES = {
+    0: "맑음", 1: "대체로 맑음", 2: "부분 흐림", 3: "흐림",
+    45: "안개", 48: "서리 안개",
+    51: "약한 이슬비", 53: "이슬비", 55: "강한 이슬비",
+    56: "어는 이슬비", 57: "어는 이슬비",
+    61: "약한 비", 63: "비", 65: "강한 비",
+    66: "어는 비", 67: "어는 비",
+    71: "약한 눈", 73: "눈", 75: "강한 눈", 77: "싸락눈",
+    80: "약한 소나기", 81: "소나기", 82: "강한 소나기",
+    85: "소나기눈", 86: "강한 소나기눈",
+    95: "뇌우", 96: "우박 뇌우", 99: "강한 우박 뇌우",
+}
+
+
+def fetch_weather(city=WEATHER_CITY, lat=WEATHER_LAT, lon=WEATHER_LON):
+    """대한민국 현재 날씨 한 줄을 반환. 실패하면 None. (stdlib urllib만 사용)"""
+    import urllib.request
+    import json
+    url = ("https://api.open-meteo.com/v1/forecast"
+           f"?latitude={lat}&longitude={lon}&current_weather=true&timezone=Asia%2FSeoul")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "desktop-sloth-pet"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.load(r)
+        cw = data["current_weather"]
+        temp = round(float(cw["temperature"]))
+        desc = WEATHER_CODES.get(int(cw["weathercode"]), "흐림")
+        wind = round(float(cw.get("windspeed", 0)))
+        return f"{city} {desc} {temp}°C (바람 {wind}km/h)"
+    except Exception:
+        return None
 GIANT_SCALE = 2            # Ctrl+0 거대 나무늘보 배율(기존 20에서 1/10로 축소)
 GIANT_CAP = 6             # 한 프로세스에서 소환 가능한 거대 나무늘보 최대 수
 DOUBLE_0_WINDOW = 0.40    # Ctrl+0 더블탭(=ctrl+00, 눕힘 토글) 인식 시간(초)
@@ -418,6 +456,7 @@ class Pet:
         self._p_ctrl = False
         self._p_k1 = False
         self._p_k0 = False
+        self._p_k9 = False
         self._combo = False         # Ctrl 누른 동안 다른 키도 눌렸는지(순수 탭 구분)
         self._zero_pending = False  # Ctrl+0 단일/더블 구분 대기
         self._zero_time = 0.0
@@ -426,6 +465,12 @@ class Pet:
         self.say_text = ""
         self.say_timer = 0
         self.say_cooldown = random.randint(150, 350)
+
+        # 날씨 (Ctrl+9로 조회, 백그라운드 스레드에서 받아옴)
+        self._weather_loading = False
+        self._weather_result = None      # 스레드가 채우면 메인 루프가 말풍선으로 출력
+        self.weather_cache = ""          # 최근 조회 결과(가끔 혼잣말로 알려줌)
+        self.weather_cache_time = 0.0
 
         # 드래그
         self.dragging = False
@@ -465,6 +510,25 @@ class Pet:
         self.say_text = text
         self.say_timer = 90
         self.say_cooldown = random.randint(180, 420)
+
+    # ---------- 날씨 (Ctrl+9) ----------
+    def request_weather(self):
+        """대한민국 날씨를 백그라운드 스레드로 조회. tkinter 루프는 안 멈춤."""
+        if self._weather_loading:
+            return
+        self._weather_loading = True
+        self.say(text="대한민국 날씨 확인 중...")
+        threading.Thread(target=self._weather_worker, daemon=True).start()
+
+    def _weather_worker(self):
+        txt = fetch_weather()
+        if txt:
+            self.weather_cache = txt
+            self.weather_cache_time = time.time()
+            self._weather_result = txt
+        else:
+            self._weather_result = "날씨를 못 가져왔어… 인터넷 확인해줄래?"
+        self._weather_loading = False
 
     # ---------- 입력 ----------
     def on_press(self, e):
@@ -558,13 +622,22 @@ class Pet:
             if self.mood_timer > 0:
                 self.mood_timer -= 1
 
-            # 말풍선 타이머 + 가끔 혼잣말
+            # 날씨 조회 결과가 도착하면 말풍선으로(스레드 -> 메인 루프)
+            if self._weather_result is not None:
+                self.say(text=self._weather_result)
+                self._weather_result = None
+
+            # 말풍선 타이머 + 가끔 혼잣말(가끔은 최근 날씨를 알려줌)
             if self.say_timer > 0:
                 self.say_timer -= 1
             else:
                 self.say_cooldown -= 1
                 if self.say_cooldown <= 0 and self.mood in ("idle", "curious"):
-                    self.say("idle")
+                    fresh = self.weather_cache and (time.time() - self.weather_cache_time) < 1800
+                    if fresh and random.random() < 0.2:
+                        self.say(text="지금 " + self.weather_cache)
+                    else:
+                        self.say("idle")
             self._write_share()
 
         # 클립 프레임 진행(매 틱, 절반 속도 -> 같은 속도지만 60fps로 부드럽게)
@@ -704,11 +777,12 @@ class Pet:
             if self.mood not in ("happy",) and self.mood_timer == 0:
                 self.set_mood("curious")
 
-    # ---------- 키 토글 (Ctrl / Ctrl+1 / Ctrl+0) ----------
+    # ---------- 키 토글 (Ctrl / Ctrl+1 / Ctrl+0 / Ctrl+9) ----------
     def _handle_keys(self):
         ctrl = key_down(VK_CONTROL)
         k1 = key_down(VK_1)
         k0 = key_down(VK_0)
+        k9 = key_down(VK_9)
 
         if ctrl and not self._p_ctrl:
             self._combo = False
@@ -740,12 +814,15 @@ class Pet:
         if self._zero_pending and (time.time() - self._zero_time) > DOUBLE_0_WINDOW:
             self._zero_pending = False
             self.summon_giant()
+        # Ctrl+9: 대한민국 날씨 조회 -> 말풍선
+        if ctrl and k9 and not self._p_k9:
+            self.request_weather()
         # 순수 Ctrl 탭(다른 키 없이 눌렀다 뗌): 따라오기 ON/OFF
         if (not ctrl) and self._p_ctrl and not self._combo:
             self.follow_on = not self.follow_on
             self.say(text="좋아, 따라갈게!" if self.follow_on else "여기서 놀고 있을게~")
 
-        self._p_ctrl, self._p_k1, self._p_k0 = ctrl, k1, k0
+        self._p_ctrl, self._p_k1, self._p_k0, self._p_k9 = ctrl, k1, k0, k9
 
     # ---------- 거대 나무늘보 (독립 창, 공존·중복 소환) ----------
     def _zoom_all(self, frames):
