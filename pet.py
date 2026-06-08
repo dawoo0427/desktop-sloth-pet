@@ -3,7 +3,7 @@
 데스크탑 펫 (Desktop Pet) - 나무늘보
 - 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
 - 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
-- 키: Ctrl=마우스 따라오기 토글 / Ctrl+1=제자리 정지 토글 / Ctrl+9=대한민국 날씨 알려주기
+- 키: Ctrl=마우스 따라오기 토글 / Ctrl+1=제자리 정지 토글 / Ctrl+9=현재 위치 날씨 알려주기
 - Ctrl+0=거대 나무늘보 소환(독립 창, 우측하단 누운 모습, 여러 마리 가능) / Ctrl+00(더블탭)=눕힘<->일어서기
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
@@ -39,9 +39,10 @@ VK_CONTROL, VK_LCTRL, VK_RCTRL = 0x11, 0xA2, 0xA3
 VK_0, VK_1, VK_9 = 0x30, 0x31, 0x39
 
 
-# 대한민국 날씨 (Open-Meteo, 무료·API키 불필요). 기본 도시=서울.
-WEATHER_CITY = "서울"
-WEATHER_LAT, WEATHER_LON = 37.5665, 126.9780
+# 날씨 (Open-Meteo) + 위치(ip-api.com), 둘 다 무료·API키 불필요.
+# 위치 조회 실패 시 폴백 좌표(서울).
+FALLBACK_CITY = "서울"
+FALLBACK_LAT, FALLBACK_LON = 37.5665, 126.9780
 # WMO 날씨 코드 -> 한글 설명 (Tkinter가 이모지를 흑백으로만 그려서 글자만 사용)
 WEATHER_CODES = {
     0: "맑음", 1: "대체로 맑음", 2: "부분 흐림", 3: "흐림",
@@ -57,12 +58,52 @@ WEATHER_CODES = {
 }
 
 
-def fetch_weather(city=WEATHER_CITY, lat=WEATHER_LAT, lon=WEATHER_LON):
-    """대한민국 현재 날씨 한 줄을 반환. 실패하면 None. (stdlib urllib만 사용)"""
+def _get_json(url, timeout=6):
     import urllib.request
     import json
+    req = urllib.request.Request(url, headers={"User-Agent": "desktop-sloth-pet"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def _korean_city(lat, lon):
+    """위경도 -> 한글 도시명 (BigDataCloud 역지오코딩, 무료·키 불필요). 실패 시 None."""
+    try:
+        u = ("https://api.bigdatacloud.net/data/reverse-geocode-client"
+             f"?latitude={lat}&longitude={lon}&localityLanguage=ko")
+        d = _get_json(u)
+        return d.get("city") or d.get("locality") or d.get("principalSubdivision") or None
+    except Exception:
+        return None
+
+
+def fetch_location():
+    """현재 IP 기반 실제 위치 (도시한글, 위도, 경도) 반환. 실패하면 None.
+    위경도=ip-api.com(무료·키 불필요), 한글 도시명=BigDataCloud 역지오코딩."""
+    try:
+        d = _get_json("http://ip-api.com/json/?fields=status,city,regionName,lat,lon")
+        if d.get("status") != "success":
+            return None
+        lat, lon = float(d["lat"]), float(d["lon"])
+        city = _korean_city(lat, lon) or d.get("city") or d.get("regionName") or "현재 위치"
+        return city, lat, lon
+    except Exception:
+        return None
+
+
+def fetch_weather(loc=None):
+    """현재 위치(loc=(도시,위도,경도))의 날씨 한 줄을 반환. loc 없으면 IP로 조회.
+    실패하면 None. (stdlib urllib만 사용)"""
+    import urllib.request
+    import json
+    if loc is None:
+        loc = fetch_location()
+    if loc:
+        city, lat, lon = loc
+    else:
+        city, lat, lon = FALLBACK_CITY, FALLBACK_LAT, FALLBACK_LON   # 위치 못 찾으면 서울
     url = ("https://api.open-meteo.com/v1/forecast"
-           f"?latitude={lat}&longitude={lon}&current_weather=true&timezone=Asia%2FSeoul")
+           f"?latitude={lat}&longitude={lon}&current_weather=true&timezone=auto")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "desktop-sloth-pet"})
         with urllib.request.urlopen(req, timeout=6) as r:
@@ -471,6 +512,7 @@ class Pet:
         self._weather_result = None      # 스레드가 채우면 메인 루프가 말풍선으로 출력
         self.weather_cache = ""          # 최근 조회 결과(가끔 혼잣말로 알려줌)
         self.weather_cache_time = 0.0
+        self._loc = None                 # IP 기반 실제 위치 캐시(한 번만 조회)
 
         # 드래그
         self.dragging = False
@@ -521,7 +563,9 @@ class Pet:
         threading.Thread(target=self._weather_worker, daemon=True).start()
 
     def _weather_worker(self):
-        txt = fetch_weather()
+        if self._loc is None:                 # 실제 위치는 최초 1회만 조회 후 캐시
+            self._loc = fetch_location()
+        txt = fetch_weather(self._loc)
         if txt:
             self.weather_cache = txt
             self.weather_cache_time = time.time()
