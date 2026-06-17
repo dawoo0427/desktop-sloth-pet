@@ -3,8 +3,8 @@
 데스크탑 펫 (Desktop Pet) - 나무늘보
 - 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
 - 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
-- 키: Ctrl=마우스 따라오기 토글 / Ctrl+1=제자리 정지 토글 / Ctrl+9=현재 위치 날씨 알려주기
-- Ctrl+0=거대 나무늘보 소환(독립 창, 우측하단 누운 모습, 여러 마리 가능) / Ctrl+00(더블탭)=눕힘<->일어서기
+- 키: F2=마우스 따라오기 토글 / F3=제자리 정지 토글 / F4=현재 위치 날씨 알려주기
+- F9=거대 나무늘보 소환(독립 창, 우측하단 누운 모습, 여러 마리 가능) / F10=눕힘<->일어서기 토글
 - 거대 나무늘보도 메인 펫들과 공존하며 같은 커맨드(따라오기/정지)로 움직임
 - 여러 번 실행해도 서로 겹치지 않게 떨어져 배치/이동
 - 힘이 나는 좋은 말만 말풍선으로 건넴(자동 줄바꿈으로 안 잘림)
@@ -38,8 +38,28 @@ def key_down(vk):
         return False
 
 
-VK_CONTROL, VK_LCTRL, VK_RCTRL = 0x11, 0xA2, 0xA3
-VK_0, VK_1, VK_9 = 0x30, 0x31, 0x39
+def force_topmost(win):
+    """Tk의 -topmost 캐싱을 우회해 매 호출마다 창 z-순서를 최상단으로 강제한다.
+    Tk는 -topmost 값이 안 바뀌면 재적용을 생략해서, 다른 프로그램·브라우저 새 창이
+    위로 올라오면 나무늘보가 그 뒤로 숨는다. SetWindowPos로 직접 끌어올리되
+    SWP_NOACTIVATE로 포커스는 뺏지 않아 입력 방해가 없다. 윈도우 전용, 실패 시 무시."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        hwnd = u.GetAncestor(win.winfo_id(), 2)   # GA_ROOT=2 (Tk 래퍼 최상위 창)
+        if not hwnd:
+            hwnd = win.winfo_id()
+        HWND_TOPMOST = -1
+        SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+        u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+    except Exception:
+        pass
+
+
+# 기능키(평소 거의 안 쓰는 F2/F3/F4/F9/F10에 각 역할 배정)
+VK_F2, VK_F3, VK_F4 = 0x71, 0x72, 0x73
+VK_F9, VK_F10 = 0x78, 0x79
 
 
 # 날씨 (Open-Meteo) + 위치(ip-api.com), 둘 다 무료·API키 불필요.
@@ -424,9 +444,8 @@ def process_bubble(prompt):
     return (reply or "음, 잘 모르겠어."), None
 
 
-GIANT_SCALE = 2            # Ctrl+0 거대 나무늘보 배율(기존 20에서 1/10로 축소)
+GIANT_SCALE = 2            # F9 거대 나무늘보 배율(기존 20에서 1/10로 축소)
 GIANT_CAP = 6             # 한 프로세스에서 소환 가능한 거대 나무늘보 최대 수
-DOUBLE_0_WINDOW = 0.40    # Ctrl+0 더블탭(=ctrl+00, 눕힘 토글) 인식 시간(초)
 
 
 def resource_dir():
@@ -504,7 +523,7 @@ def draw_speech_bubble(c, scx, y_anchor, text, win_w):
 
 
 class GiantSloth:
-    """독립 창 거대 나무늘보. 메인 펫들과 공존, 같은 커맨드(Ctrl=따라오기/Ctrl+1=정지).
+    """독립 창 거대 나무늘보. 메인 펫들과 공존, 같은 커맨드(F2=따라오기/F3=정지).
     - 누우면: 엎드려 팔베개 자는 모습(정지) + 'Zzz' 말풍선
     - 일어서면: 일반 나무늘보처럼 깜빡/이동 + 응원 말풍선"""
 
@@ -669,9 +688,10 @@ class GiantSloth:
         if slow:
             self.t += 1
             self._talk()
-            if self.t % 90 == 0:          # 화면 밖 사라짐 방지(모니터 구성 변경/최상위 가로채기)
+            if self.t % 5 == 0:           # 새 창이 떠도 항상 최상단 유지(약 0.17초마다)
+                force_topmost(self.win)
+            if self.t % 90 == 0:          # 화면 밖 사라짐 방지(모니터 구성 변경/해상도 변경)
                 try:
-                    self.win.wm_attributes("-topmost", True)
                     self.win.lift()
                 except Exception:
                     pass
@@ -748,7 +768,7 @@ class Pet:
         self.fh = any_frames[0].height()
         self.fphase = 0.0
 
-        # 거대 나무늘보(Ctrl+0)용 정적 소스 (서있는/누운). pet.py가 zoom으로 확대.
+        # 거대 나무늘보(F9)용 정적 소스 (서있는/누운). pet.py가 zoom으로 확대.
         def _load_png(p, fb):
             try:
                 return tk.PhotoImage(file=p) if os.path.exists(p) else fb
@@ -807,26 +827,24 @@ class Pet:
         self.hop_v = 0.0
 
         # 이동/키 상태
-        self.follow_on = False      # Ctrl 탭: 마우스 따라오기 ON/OFF (기본 OFF=배회) — 거대 펫도 공유
-        self.frozen = False         # Ctrl+1: 제자리 정지 ON/OFF — 거대 펫도 공유
+        self.follow_on = False      # F2: 마우스 따라오기 ON/OFF (기본 OFF=배회) — 거대 펫도 공유
+        self.frozen = False         # F3: 제자리 정지 ON/OFF — 거대 펫도 공유
         self.wtx = None             # 배회 목표점
         self.wty = None
         self.wtimer = 0
-        # 키 엣지 감지용 이전 상태
-        self._p_ctrl = False
-        self._p_k1 = False
-        self._p_k0 = False
-        self._p_k9 = False
-        self._combo = False         # Ctrl 누른 동안 다른 키도 눌렸는지(순수 탭 구분)
-        self._zero_pending = False  # Ctrl+0 단일/더블 구분 대기
-        self._zero_time = 0.0
+        # 키 엣지 감지용 이전 상태 (F2/F3/F4/F9/F10)
+        self._p_f2 = False
+        self._p_f3 = False
+        self._p_f4 = False
+        self._p_f9 = False
+        self._p_f10 = False
 
         # 말풍선
         self.say_text = ""
         self.say_timer = 0
         self.say_cooldown = random.randint(150, 350)
 
-        # 날씨 (Ctrl+9로 조회, 백그라운드 스레드에서 받아옴)
+        # 날씨 (F4로 조회, 백그라운드 스레드에서 받아옴)
         self._weather_loading = False
         self._weather_result = None      # 스레드가 채우면 메인 루프가 말풍선으로 출력
         self.weather_cache = ""          # 최근 조회 결과(가끔 혼잣말로 알려줌)
@@ -855,6 +873,16 @@ class Pet:
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="물어보기 / 문서·표 만들기", command=self.toggle_search)
         self.menu.add_command(label="Gemini 키 설정(구글 AI)", command=self.set_gemini_key)
+        self.menu.add_separator()
+        # 단축키 안내(클릭 불가, 보기용)
+        self.menu.add_command(label="단축키", state="disabled")
+        for _lbl in ("F2  마우스 따라오기 토글",
+                     "F3  제자리 정지 토글",
+                     "F4  현재 위치 날씨",
+                     "F9  거대 나무늘보 소환",
+                     "F10  거대 나무늘보 눕힘/일어서기"):
+            self.menu.add_command(label="    " + _lbl, state="disabled")
+        self.menu.add_separator()
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -885,7 +913,7 @@ class Pet:
         self.say_timer = 90
         self.say_cooldown = random.randint(180, 420)
 
-    # ---------- 날씨 (Ctrl+9 / 시작 인사) ----------
+    # ---------- 날씨 (F4 / 시작 인사) ----------
     GREET_TAILS = ["좋은 하루 보내!", "오늘도 화이팅!", "행복한 하루 되길~", "천천히 가도 괜찮아~"]
 
     def request_weather(self, greet=False):
@@ -1092,8 +1120,8 @@ class Pet:
             self.vsx, self.vsy, self.vsw, self.vsh = vs
         self.x = max(self.vsx - 30, min(self.vsx + self.vsw - self.W + 30, self.x))
         self.y = max(self.vsy, min(self.vsy + self.vsh - self.H, self.y))
+        force_topmost(self.root)            # 다른 앱이 가로챈 최상위 복구
         try:
-            self.root.wm_attributes("-topmost", True)   # 다른 앱이 가로챈 최상위 복구
             self.root.lift()
         except Exception:
             pass
@@ -1105,6 +1133,9 @@ class Pet:
         self.tick += 1
         slow = (self.tick % 2 == 0)   # 이동·물리·타이머는 30fps 유지(기존 감각 보존)
         self._handle_keys()
+
+        if self.tick % 10 == 0:       # 새 창(프로그램·브라우저)이 떠도 항상 최상단 유지(약 0.17초마다)
+            force_topmost(self.root)
 
         if slow:
             self.t += 1
@@ -1314,52 +1345,35 @@ class Pet:
             if self.mood not in ("happy",) and self.mood_timer == 0:
                 self.set_mood("curious")
 
-    # ---------- 키 토글 (Ctrl / Ctrl+1 / Ctrl+0 / Ctrl+9) ----------
+    # ---------- 키 토글 (F2 따라오기 / F3 정지 / F4 날씨 / F9 거대소환 / F10 눕힘토글) ----------
     def _handle_keys(self):
-        ctrl = key_down(VK_CONTROL)
-        k1 = key_down(VK_1)
-        k0 = key_down(VK_0)
-        k9 = key_down(VK_9)
+        f2 = key_down(VK_F2)
+        f3 = key_down(VK_F3)
+        f4 = key_down(VK_F4)
+        f9 = key_down(VK_F9)
+        f10 = key_down(VK_F10)
 
-        if ctrl and not self._p_ctrl:
-            self._combo = False
-        if ctrl:
-            # Ctrl 누른 동안 다른 키(숫자·C·V 등)가 같이 눌리면 '조합'으로 보고 follow 토글 제외
-            for vk in range(0x08, 0xFF):
-                if vk in (VK_CONTROL, VK_LCTRL, VK_RCTRL):
-                    continue
-                if key_down(vk):
-                    self._combo = True
-                    break
-
-        # Ctrl+1: 제자리 정지 ON/OFF (메인·거대 펫 모두)
-        if ctrl and k1 and not self._p_k1:
+        # F2: 마우스 따라오기 ON/OFF
+        if f2 and not self._p_f2:
+            self.follow_on = not self.follow_on
+            self.say(text="좋아, 따라갈게!" if self.follow_on else "여기서 놀고 있을게~")
+        # F3: 제자리 정지 ON/OFF (메인·거대 펫 모두)
+        if f3 and not self._p_f3:
             self.frozen = not self.frozen
             self.vx = self.vy = 0.0
             self.set_mood("idle")
             self.say(text="여기 가만히 있을게!" if self.frozen else "다시 움직일게~")
-        # Ctrl+0: (단일 탭)=거대 나무늘보 소환 / (더블탭=ctrl+00)=눕힘<->일어서기 토글
-        if ctrl and k0 and not self._p_k0:
-            now = time.time()
-            if self._zero_pending and (now - self._zero_time) <= DOUBLE_0_WINDOW:
-                self._zero_pending = False           # 더블탭 -> 눕힘 토글(소환 취소)
-                self.toggle_giants_lie()
-            else:
-                self._zero_pending = True            # 일단 대기(더블탭인지 지켜봄)
-                self._zero_time = now
-        # 대기 중인 단일 0이 시간 지나면 소환 확정
-        if self._zero_pending and (time.time() - self._zero_time) > DOUBLE_0_WINDOW:
-            self._zero_pending = False
-            self.summon_giant()
-        # Ctrl+9: 대한민국 날씨 조회 -> 말풍선
-        if ctrl and k9 and not self._p_k9:
+        # F4: 현재 위치 날씨 조회 -> 말풍선
+        if f4 and not self._p_f4:
             self.request_weather()
-        # 순수 Ctrl 탭(다른 키 없이 눌렀다 뗌): 따라오기 ON/OFF
-        if (not ctrl) and self._p_ctrl and not self._combo:
-            self.follow_on = not self.follow_on
-            self.say(text="좋아, 따라갈게!" if self.follow_on else "여기서 놀고 있을게~")
+        # F9: 거대 나무늘보 소환
+        if f9 and not self._p_f9:
+            self.summon_giant()
+        # F10: 거대 나무늘보 눕힘 <-> 일어서기 토글
+        if f10 and not self._p_f10:
+            self.toggle_giants_lie()
 
-        self._p_ctrl, self._p_k1, self._p_k0, self._p_k9 = ctrl, k1, k0, k9
+        self._p_f2, self._p_f3, self._p_f4, self._p_f9, self._p_f10 = f2, f3, f4, f9, f10
 
     # ---------- 거대 나무늘보 (독립 창, 공존·중복 소환) ----------
     def _zoom_all(self, frames):
