@@ -25,6 +25,8 @@ import atexit
 import tempfile
 import threading
 
+import lines          # 키 없이 상황별 대사 조합 (lines.py)
+
 TRANSPARENT = "magenta"   # 이 색은 화면에서 투명 처리됨 (프레임 배경색)
 FRAME_DIR = "frames"
 
@@ -475,9 +477,6 @@ def virtual_screen():
 DARK   = "#46301F"   # 말풍선 테두리/글자
 SHADOW = "#4E3826"   # 바닥 그림자
 
-GIANT_LINES = ["나도 잘하고 있지?", "오늘도 화이팅!", "크지만 마음은 말랑~",
-               "같이 쉬어가자~", "천천히 가도 괜찮아", "행복한 하루 보내!"]
-
 
 def _round_rect(c, x0, y0, x1, y1, r, fill="", outline="", width=1):
     c.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90, style="pieslice", fill=fill, outline=fill)
@@ -679,7 +678,7 @@ class GiantSloth:
         else:
             self.say_cd -= 1
             if self.say_cd <= 0:
-                self.say_text = random.choice(GIANT_LINES)
+                self.say_text = lines.compose("idle", self.app.weather_cache)
                 self.say_timer = 90
                 self.say_cd = random.randint(140, 300)
 
@@ -891,24 +890,10 @@ class Pet:
         self.root.mainloop()
         self._unregister()          # 종료 시 위치 공유 파일 정리
 
-    # ---------- 대사 (힘이 나는 좋은 말만!) ----------
-    LINES = {
-        "idle": ["오늘도 잘하고 있어!", "넌 충분히 멋져!", "조금씩 가면 돼",
-                 "넌 할 수 있어!", "지금도 충분히 잘하고 있어", "거의 다 왔어!",
-                 "네 속도대로 가면 돼", "실수해도 괜찮아", "넌 생각보다 강해",
-                 "오늘 하루도 수고했어", "잠깐 쉬어도 괜찮아", "넌 소중한 사람이야",
-                 "좋은 일이 생길 거야", "깊게 숨 한 번, 후~", "잘 견뎌왔어, 대단해"],
-        "happy": ["야호! 신난다!", "너랑 있으면 좋아!", "우리 최고야!",
-                  "헤헤 행복해~", "넌 정말 멋져!"],
-        "startled": ["우와, 반가워!", "히히 깜짝, 좋아!", "너라서 더 좋아!",
-                     "꺄 행복해~"],
-        "curious": ["같이 가자!", "내가 함께할게!", "어디든 따라갈게!",
-                    "곁에 있어 줄게~", "넌 혼자가 아니야!"],
-    }
-
+    # ---------- 대사 (힘이 나는 좋은 말만! lines.py 가 상황 맞춰 조합) ----------
     def say(self, mood=None, text=None):
         if text is None:
-            text = random.choice(self.LINES.get(mood or self.mood, self.LINES["idle"]))
+            text = lines.compose(mood or self.mood, self.weather_cache)
         self.say_text = text
         self.say_timer = 90
         self.say_cooldown = random.randint(180, 420)

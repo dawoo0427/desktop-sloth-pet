@@ -16,3 +16,6 @@ _*.txt
 gemini_key.txt
 google_key.txt
 anthropic_key.txt
+
+# 3D 렌더 원본(고해상도 중간 산출물, build_frames_3d.py 가 재생성)
+render3d/
