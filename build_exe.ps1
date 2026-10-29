@@ -18,6 +18,7 @@ python -m PyInstaller --onefile --noconsole --clean `
     --name "DesktopSlothPet" `
     --icon "pet.ico" `
     --add-data "frames;frames" `
+    --add-data "frames_big;frames_big" `
     pet.py
 
 Write-Host ""

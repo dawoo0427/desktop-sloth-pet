@@ -29,6 +29,7 @@ import lines          # 키 없이 상황별 대사 조합 (lines.py)
 
 TRANSPARENT = "magenta"   # 이 색은 화면에서 투명 처리됨 (프레임 배경색)
 FRAME_DIR = "frames"
+FRAME_DIR_BIG = "frames_big"   # 거대 늘보용 2배 해상도 프레임(없으면 frames 를 zoom)
 
 
 def key_down(vk):
@@ -1370,12 +1371,22 @@ class Pet:
                 out.append(f)
         return out
 
+    def _load_big(self, name, small):
+        """frames_big/{name}_*.png (촘촘한 도트) 를 읽고, 없으면 작은 프레임을 확대."""
+        fs = sorted(glob.glob(os.path.join(resource_dir(), FRAME_DIR_BIG, f"{name}_*.png")))
+        if len(fs) == len(small):
+            try:
+                return [tk.PhotoImage(file=f) for f in fs]
+            except Exception:
+                pass
+        return self._zoom_all(small)
+
     def _ensure_giant_imgs(self):
         if self.giant_sleep_frames is None:
-            self.giant_sleep_frames = self._zoom_all(self._sleep_srcs)
+            self.giant_sleep_frames = self._load_big("sleep", self._sleep_srcs)
         if self.giant_clips is None:
-            # 서있을 때 일반 펫과 똑같은 기분별 모션을 쓰도록 모든 클립을 확대 캐시
-            self.giant_clips = {name: self._zoom_all(frames) for name, frames in self.clips.items()}
+            # 서있을 때 일반 펫과 똑같은 기분별 모션을 쓰도록 모든 클립을 큰 해상도로 캐시
+            self.giant_clips = {name: self._load_big(name, frames) for name, frames in self.clips.items()}
 
     def summon_giant(self):
         if len(self.giants) >= GIANT_CAP:

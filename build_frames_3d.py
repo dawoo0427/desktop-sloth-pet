@@ -5,7 +5,8 @@
 
 pet.py 는 그대로. 기존 픽셀아트 프레임과 같은 크기로 맞춘다
 (서있는 클립 142x188, 캐릭터 높이 150 / 누운 sleep 224x150).
-3D와 픽셀아트 중간 느낌: 셀 셰이딩 렌더 -> 1/2 축소 -> 공통 팔레트 -> 1칸 외곽선 -> 2배 도트 확대.
+3D와 픽셀아트 중간 느낌: 셀 셰이딩 렌더 -> 축소 -> 공통 팔레트 -> 1칸 외곽선.
+거대 늘보용은 frames_big/ 에 2배 해상도로 따로 만든다 (pet.py 가 확대하면 도트가 커져 깨져 보임).
 """
 import glob
 import os
@@ -17,10 +18,12 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 RENDER = os.path.join(HERE, "render3d")
 OUTDIR = os.path.join(HERE, "frames")
+OUTDIR_BIG = os.path.join(HERE, "frames_big")   # 거대 늘보(F9)용 2배 해상도 (확대 대신 촘촘한 도트)
+BIG = 2
 STAND = ["idle", "happy", "startled", "curious"]
 N = 60
 MAG = (255, 0, 255)
-PIXEL = 2                 # 도트 크기 (2 = 2x2 픽셀 한 칸, 원본 픽셀아트보다 살짝 촘촘)
+PIXEL = 1                 # 도트 크기 (1 = 화면 픽셀 한 칸. 2였을 땐 도트가 커서 깨져 보였음)
 N_COLORS = 40             # 전체 공통 팔레트 색 수
 OUTLINE_RGB = (70, 48, 31)
 
@@ -93,7 +96,7 @@ def to_lowres(clips, W, H, ref_box, scale, anchor):
     return out
 
 
-def pixelize(frames):
+def pixelize(frames, outdir):
     """공통 팔레트로 색 줄이기 + 1칸 진갈색 외곽선 + PIXEL배 확대 + 마젠타 평탄화 -> frames/ 저장."""
     # 모든 프레임에서 고른 표본으로 팔레트 하나 (프레임마다 색이 달라 깜빡이는 것 방지)
     keys = sorted(frames)
@@ -127,24 +130,24 @@ def pixelize(frames):
                 elif any(0 <= xx + dx < w and 0 <= yy + dy < h and ap[xx + dx, yy + dy]
                          for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                     fp[xx, yy] = OUTLINE_RGB          # 실루엣 바깥 1칸 외곽선 (도트 느낌)
-        flat.resize((w * PIXEL, h * PIXEL), Image.NEAREST).save(os.path.join(OUTDIR, f"{clip}_{k:02d}.png"))
+        flat.resize((w * PIXEL, h * PIXEL), Image.NEAREST).save(os.path.join(outdir, f"{clip}_{k:02d}.png"))
 
 
 def main():
     if "--no-render" not in sys.argv:
         render()
-    os.makedirs(OUTDIR, exist_ok=True)
+    for outdir, m in ((OUTDIR, 1), (OUTDIR_BIG, BIG)):
+        os.makedirs(outdir, exist_ok=True)
+        # 서있는 클립: idle 0번 프레임 기준 캐릭터 높이 CHAR_H, 발바닥 = 아래에서 FOOT_PAD
+        ref = bbox_of([os.path.join(RENDER, "idle_00.png")])
+        s = CHAR_H * m / (ref[3] - ref[1])
+        frames = to_lowres(STAND, STAND_W * m, STAND_H * m, ref, s, (STAND_W * m / 2, (STAND_H - FOOT_PAD) * m))
 
-    # 서있는 클립: idle 0번 프레임 기준 캐릭터 높이 CHAR_H, 발바닥 = 아래에서 FOOT_PAD
-    ref = bbox_of([os.path.join(RENDER, "idle_00.png")])
-    s = CHAR_H / (ref[3] - ref[1])
-    frames = to_lowres(STAND, STAND_W, STAND_H, ref, s, (STAND_W / 2, STAND_H - FOOT_PAD))
-
-    # 누운 클립: 숨쉬기 전체 범위가 캔버스에 들어가게
-    ref = bbox_of(glob.glob(os.path.join(RENDER, "sleep_*.png")))
-    s = min((SLEEP_W - 2 * SLEEP_PAD) / (ref[2] - ref[0]), (SLEEP_H - 2 * SLEEP_PAD) / (ref[3] - ref[1]))
-    frames.update(to_lowres(["sleep"], SLEEP_W, SLEEP_H, ref, s, (SLEEP_W / 2, SLEEP_H - SLEEP_PAD)))
-    pixelize(frames)
+        # 누운 클립: 숨쉬기 전체 범위가 캔버스에 들어가게
+        ref = bbox_of(glob.glob(os.path.join(RENDER, "sleep_*.png")))
+        s = m * min((SLEEP_W - 2 * SLEEP_PAD) / (ref[2] - ref[0]), (SLEEP_H - 2 * SLEEP_PAD) / (ref[3] - ref[1]))
+        frames.update(to_lowres(["sleep"], SLEEP_W * m, SLEEP_H * m, ref, s, (SLEEP_W * m / 2, (SLEEP_H - SLEEP_PAD) * m)))
+        pixelize(frames, outdir)
     for c in STAND + ["sleep"]:
         print(f"{c}: {N} frames")
 
