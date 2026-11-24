@@ -1,7 +1,8 @@
 """3D 나무늘보 프레임 빌드: Blender 로 렌더(sloth3d.py) -> 축소 + 마젠타 평탄화 -> frames/.
 
-사용법:  python build_frames_3d.py            # 렌더 + 변환 (Blender 5.x, Pillow 필요)
-         python build_frames_3d.py --no-render  # 이미 렌더된 render3d/ 로 변환만
+사용법:  python build_frames_3d.py [sloth|giraffe]      # 렌더 + 변환 (Blender 5.x, Pillow 필요, 생략 시 둘 다)
+         python build_frames_3d.py ... --no-render       # 이미 렌더된 render3d*/ 로 변환만
+기린 친구(giraffe3d.py)는 frames/giraffe_{clip}_NN.png (서있는 클립만, 누운 자세 없음).
 
 pet.py 는 그대로. 기존 픽셀아트 프레임과 같은 크기로 맞춘다
 (서있는 클립 142x188, 캐릭터 높이 150 / 누운 sleep 224x150).
@@ -17,6 +18,11 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RENDER = os.path.join(HERE, "render3d")
+# 캐릭터: (Blender 스크립트, 렌더 폴더, 프레임 이름 앞머리, 누운 클립 포함?, 캐릭터 높이, 서있는 캔버스 높이)
+CHARS = {
+    "sloth": ("sloth3d.py", "render3d", "", True, 150, 188),
+    "giraffe": ("giraffe3d.py", "render3d_giraffe", "giraffe_", False, 180, 208),   # 긴 목만큼 키·캔버스를 키움 (몸 크기는 늘보와 비슷)
+}
 OUTDIR = os.path.join(HERE, "frames")
 OUTDIR_BIG = os.path.join(HERE, "frames_big")   # 거대 늘보(F9)용 2배 해상도 (확대 대신 촘촘한 도트)
 BIG = 2
@@ -54,11 +60,11 @@ def find_blender():
     return cands[-1]
 
 
-def render():
+def render(script, clips):
     blender = find_blender()
     print("Blender:", blender)
-    subprocess.run([blender, "-b", "--factory-startup", "-P", os.path.join(HERE, "sloth3d.py"),
-                    "--", RENDER, ",".join(STAND + ["sleep"]), str(N)], check=True)
+    subprocess.run([blender, "-b", "--factory-startup", "-P", os.path.join(HERE, script),
+                    "--", RENDER, ",".join(clips), str(N)], check=True)
 
 
 def bbox_of(paths):
@@ -96,7 +102,7 @@ def to_lowres(clips, W, H, ref_box, scale, anchor):
     return out
 
 
-def pixelize(frames, outdir):
+def pixelize(frames, outdir, prefix=""):
     """공통 팔레트로 색 줄이기 + 1칸 진갈색 외곽선 + PIXEL배 확대 + 마젠타 평탄화 -> frames/ 저장."""
     # 모든 프레임에서 고른 표본으로 팔레트 하나 (프레임마다 색이 달라 깜빡이는 것 방지)
     keys = sorted(frames)
@@ -130,26 +136,38 @@ def pixelize(frames, outdir):
                 elif any(0 <= xx + dx < w and 0 <= yy + dy < h and ap[xx + dx, yy + dy]
                          for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                     fp[xx, yy] = OUTLINE_RGB          # 실루엣 바깥 1칸 외곽선 (도트 느낌)
-        flat.resize((w * PIXEL, h * PIXEL), Image.NEAREST).save(os.path.join(outdir, f"{clip}_{k:02d}.png"))
+        flat.resize((w * PIXEL, h * PIXEL), Image.NEAREST).save(os.path.join(outdir, f"{prefix}{clip}_{k:02d}.png"))
+
+
+def build(name, no_render):
+    global RENDER
+    script, rdir, prefix, lying, char_h, stand_h = CHARS[name]
+    RENDER = os.path.join(HERE, rdir)
+    clips = STAND + (["sleep"] if lying else [])
+    if not no_render:
+        render(script, clips)
+    for outdir, m in ((OUTDIR, 1), (OUTDIR_BIG, BIG)):
+        if prefix and outdir == OUTDIR_BIG:
+            continue                     # 거대 버전은 늘보만
+        os.makedirs(outdir, exist_ok=True)
+        # 서있는 클립: idle 0번 프레임 기준 캐릭터 높이 char_h, 발바닥 = 아래에서 FOOT_PAD
+        ref = bbox_of([os.path.join(RENDER, "idle_00.png")])
+        s = char_h * m / (ref[3] - ref[1])
+        frames = to_lowres(STAND, STAND_W * m, stand_h * m, ref, s, (STAND_W * m / 2, (stand_h - FOOT_PAD) * m))
+
+        if lying:  # 누운 클립: 숨쉬기 전체 범위가 캔버스에 들어가게
+            ref = bbox_of(glob.glob(os.path.join(RENDER, "sleep_*.png")))
+            s = m * min((SLEEP_W - 2 * SLEEP_PAD) / (ref[2] - ref[0]), (SLEEP_H - 2 * SLEEP_PAD) / (ref[3] - ref[1]))
+            frames.update(to_lowres(["sleep"], SLEEP_W * m, SLEEP_H * m, ref, s, (SLEEP_W * m / 2, (SLEEP_H - SLEEP_PAD) * m)))
+        pixelize(frames, outdir, prefix)
+    for c in clips:
+        print(f"{name} {c}: {N} frames")
 
 
 def main():
-    if "--no-render" not in sys.argv:
-        render()
-    for outdir, m in ((OUTDIR, 1), (OUTDIR_BIG, BIG)):
-        os.makedirs(outdir, exist_ok=True)
-        # 서있는 클립: idle 0번 프레임 기준 캐릭터 높이 CHAR_H, 발바닥 = 아래에서 FOOT_PAD
-        ref = bbox_of([os.path.join(RENDER, "idle_00.png")])
-        s = CHAR_H * m / (ref[3] - ref[1])
-        frames = to_lowres(STAND, STAND_W * m, STAND_H * m, ref, s, (STAND_W * m / 2, (STAND_H - FOOT_PAD) * m))
-
-        # 누운 클립: 숨쉬기 전체 범위가 캔버스에 들어가게
-        ref = bbox_of(glob.glob(os.path.join(RENDER, "sleep_*.png")))
-        s = m * min((SLEEP_W - 2 * SLEEP_PAD) / (ref[2] - ref[0]), (SLEEP_H - 2 * SLEEP_PAD) / (ref[3] - ref[1]))
-        frames.update(to_lowres(["sleep"], SLEEP_W * m, SLEEP_H * m, ref, s, (SLEEP_W * m / 2, (SLEEP_H - SLEEP_PAD) * m)))
-        pixelize(frames, outdir)
-    for c in STAND + ["sleep"]:
-        print(f"{c}: {N} frames")
+    names = [a for a in sys.argv[1:] if a in CHARS] or list(CHARS)
+    for name in names:
+        build(name, "--no-render" in sys.argv)
 
 
 if __name__ == "__main__":

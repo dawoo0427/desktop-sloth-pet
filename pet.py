@@ -235,6 +235,27 @@ def _config_dir():
     return d
 
 
+def load_settings():
+    """보이기 설정 등 (%APPDATA%\\DesktopSlothPet\\settings.json). 없거나 깨지면 기본값."""
+    import json
+    st = {"show_sloth": True, "show_giraffe": True}
+    try:
+        with open(os.path.join(_config_dir(), "settings.json"), encoding="utf-8") as f:
+            st.update(json.load(f))
+    except Exception:
+        pass
+    return st
+
+
+def save_settings(st):
+    import json
+    try:
+        with open(os.path.join(_config_dir(), "settings.json"), "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
 def load_gemini_key():
     """Gemini 키: 환경변수(GEMINI_API_KEY/GOOGLE_API_KEY) 우선, 없으면 설정폴더/스크립트폴더의 키 파일."""
     for env in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
@@ -739,6 +760,43 @@ class GiantSloth:
         self._draw()
 
 
+class GiraffeFriend(GiantSloth):
+    """늘 늘보 곁에 같이 나오는 기린 친구 (늘보와 같은 크기, frames/giraffe_*.png).
+    거대 늘보 창 동작(배회·따라오기·기분별 모션·혼잣말)을 그대로 쓰되 항상 서 있음.
+    우클릭은 보내기 대신 메인 메뉴."""
+
+    BUBBLE_H = 70
+
+    def __init__(self, app):
+        super().__init__(app, 0)
+        self.lying = False
+        self.canvas.bind("<Button-3>", app.on_right)
+        # 처음 위치: 늘보 오른쪽 옆, 발 높이 맞춤
+        self.x = app.x + app.W / 2 + 40
+        self.y = app.y + app.H - self.win_h
+        self.x = max(app.vsx, min(app.vsx + app.vsw - self.win_w, self.x))
+        self._relayout()
+        self._draw()
+
+    def _stand_clip(self):
+        clips = self.app.giraffe_clips
+        return clips.get(self.mood) or clips["idle"]
+
+    def _cur_img(self):
+        fr = self._stand_clip()
+        return fr[int(self.fphase) % len(fr)]
+
+    def _content_size(self):
+        img = self.app.giraffe_clips["idle"][0]
+        return img.width(), img.height()
+
+    def _relayout(self):
+        super()._relayout()
+        self.win_w = max(self.cw, 300)     # 말풍선이 좁아 줄이 많아지지 않게 (투명 부분은 클릭 통과)
+        self.canvas.config(width=self.win_w)
+        self.win.geometry(f"{self.win_w}x{self.win_h}+{int(self.x)}+{int(self.y)}")
+
+
 class Pet:
     def __init__(self):
         self.root = tk.Tk()
@@ -780,6 +838,12 @@ class Pet:
         self.giant_sleep_frames = None   # 누운 숨쉬기 zoom 캐시
         self.giant_clips = None          # 서있는 기분별 클립(idle/happy/startled/curious) zoom 캐시
         self.giants = []                 # 소환된 거대 나무늘보(독립 창)들
+        # 기린 친구 프레임 frames/giraffe_{clip}_*.png (없으면 기린 없이 실행)
+        self.giraffe_clips = {}
+        for name in ("idle", "happy", "startled", "curious"):
+            cf = sorted(glob.glob(os.path.join(here, FRAME_DIR, f"giraffe_{name}_*.png")))
+            if cf:
+                self.giraffe_clips[name] = [tk.PhotoImage(file=f) for f in cf]
 
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
         self.W = max(self.fw, 360)
@@ -874,6 +938,16 @@ class Pet:
         self.menu.add_command(label="물어보기 / 문서·표 만들기", command=self.toggle_search)
         self.menu.add_command(label="Gemini 키 설정(구글 AI)", command=self.set_gemini_key)
         self.menu.add_separator()
+        # 캐릭터 개별 보이기/숨기기 (설정은 다음 실행에도 유지)
+        st = load_settings()
+        self.show_sloth = tk.BooleanVar(value=bool(st["show_sloth"]))
+        self.show_giraffe = tk.BooleanVar(value=bool(st["show_giraffe"]))
+        self.menu.add_checkbutton(label="나무늘보 보이기", variable=self.show_sloth,
+                                  command=lambda: self._apply_visibility("sloth"))
+        self.menu.add_checkbutton(label="기린 친구 보이기", variable=self.show_giraffe,
+                                  command=lambda: self._apply_visibility("giraffe"),
+                                  state="normal" if "idle" in self.giraffe_clips else "disabled")
+        self.menu.add_separator()
         # 단축키 안내(클릭 불가, 보기용)
         self.menu.add_command(label="단축키", state="disabled")
         for _lbl in ("F2  마우스 따라오기 토글",
@@ -884,6 +958,10 @@ class Pet:
             self.menu.add_command(label="    " + _lbl, state="disabled")
         self.menu.add_separator()
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
+
+        # 기린 친구는 늘 같이 등장
+        self.friends = [GiraffeFriend(self)] if "idle" in self.giraffe_clips else []
+        self._apply_visibility()
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
         self.root.after(1800, lambda: self.request_weather(greet=True))
@@ -950,6 +1028,24 @@ class Pet:
 
     def on_right(self, e):
         self.menu.tk_popup(e.x_root, e.y_root)
+
+    def _apply_visibility(self, changed=None):
+        """늘보/기린 창 보이기·숨기기. 둘 다 숨기면 우클릭할 곳이 없어지므로 마지막 하나는 못 끔."""
+        has_giraffe = bool(self.friends)
+        if not self.show_sloth.get() and not (self.show_giraffe.get() and has_giraffe):
+            (self.show_giraffe if changed == "giraffe" else self.show_sloth).set(True)
+            self.say(text="둘 다 숨으면 못 찾아! 한 명은 남겨둘게~")
+        if self.show_sloth.get():
+            self.root.deiconify()
+        else:
+            self.root.withdraw()
+        for f in self.friends:
+            if self.show_giraffe.get():
+                f.win.deiconify()
+            else:
+                f.win.withdraw()
+        if changed:
+            save_settings({"show_sloth": self.show_sloth.get(), "show_giraffe": self.show_giraffe.get()})
 
     # ---------- Gemini(구글 AI) 키 설정 ----------
     def set_gemini_key(self):
@@ -1206,7 +1302,7 @@ class Pet:
         self.fphase += 0.125 + energy * 0.425
 
         # 거대 나무늘보(독립 창)들 — 애니메이션 매 틱, 이동은 slow
-        for g in list(self.giants):
+        for g in list(self.giants) + (self.friends if self.show_giraffe.get() else []):
             g.update(slow)
 
         self.draw()
