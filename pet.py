@@ -243,7 +243,8 @@ def _config_dir():
 def load_settings():
     """보이기 설정 등 (%APPDATA%\\DesktopZoo\\settings.json). 없거나 깨지면 기본값."""
     import json
-    st = {"show_sloth": True, "show_giraffe": True, "show_monkey": True, "show_flamingo": True, "show_panda": True}
+    st = {"show_sloth": True, "show_giraffe": True, "show_monkey": True, "show_flamingo": True, "show_panda": True,
+          "show_guineapig": True, "show_babsae": True, "show_capybara": True, "show_otter": True}
     try:
         with open(os.path.join(_config_dir(), "settings.json"), encoding="utf-8") as f:
             st.update(json.load(f))
@@ -769,11 +770,12 @@ class GiantSloth:
 
 # 늘 늘보 곁에 같이 나오는 친구들: (이름, 메뉴 이름, 처음 위치 = 늘보 중심에서 가로 거리)
 FRIENDS = (("giraffe", "기린 친구", 190), ("monkey", "원숭이 친구", -190), ("flamingo", "플라밍고 친구", 380),
-           ("panda", "판다 친구", -380))
+           ("panda", "판다 친구", -380), ("guineapig", "기니피그 친구", 570),
+           ("babsae", "뱁새 친구", -570), ("capybara", "카피바라 친구", 760), ("otter", "수달 친구", -760))
 
 
 class Friend(GiantSloth):
-    """늘 늘보 곁에 같이 나오는 친구 (기린/원숭이/플라밍고/판다, frames/{kind}_*.png).
+    """늘 늘보 곁에 같이 나오는 친구 (기린/원숭이/플라밍고/판다/기니피그/뱁새/카피바라/수달, frames/{kind}_*.png).
     거대 늘보 창 동작(배회·따라오기·기분별 모션·혼잣말)을 그대로 쓰되 항상 서 있음.
     우클릭은 보내기 대신 메인 메뉴."""
 

@@ -310,10 +310,11 @@ for side, sx in (("L", 1), ("R", -1)):
     sphere(f"patch_{side}", (ex + 0.02 * sx, sf + 0.03, EYE_Z - 0.03), (0.175, 0.05, 0.14), M["dark"], head,
            outline=None, rot=(0, math.radians(-30 * sx), 0))
     piv = empty(f"eyepiv_{side}", (ex, sf - 0.02, EYE_Z), head)
-    parts = [   # 검은 패치 위에서 보이게: 흰자 + 검은 눈동자 + 반짝이
-        sphere(f"sclera_{side}", (ex, sf - 0.005, EYE_Z), (0.072, 0.03, 0.078), M["white"], piv, outline=None),
-        sphere(f"pupil_{side}", (ex, sf - 0.025, EYE_Z - 0.005), (0.056, 0.03, 0.062), M["eye"], piv, outline=None),
-        sphere(f"hi_{side}", (ex + 0.022, sf - 0.05, EYE_Z + 0.022), (0.022, 0.012, 0.022), M["white"], piv, outline=None),
+    parts = [   # 2026-11-25: 흰자가 무섭다고 해서 흰자 없이 갈색 눈 + 검은 눈동자 + 큰/작은 반짝이
+        sphere(f"iris_{side}", (ex, sf - 0.005, EYE_Z), (0.078, 0.03, 0.086), M["iris"], piv, outline=None),
+        sphere(f"pupil_{side}", (ex, sf - 0.02, EYE_Z - 0.006), (0.058, 0.03, 0.066), M["eye"], piv, outline=None),
+        sphere(f"hi_{side}", (ex + 0.026, sf - 0.05, EYE_Z + 0.028), (0.032, 0.012, 0.032), M["white"], piv, outline=None),
+        sphere(f"hi2_{side}", (ex - 0.03, sf - 0.05, EYE_Z - 0.035), (0.014, 0.01, 0.014), M["white"], piv, outline=None),
     ]
     face["open"] += parts
     face["blink"].append(piv)
