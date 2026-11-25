@@ -1,6 +1,6 @@
 """3D 나무늘보 프레임 빌드: Blender 로 렌더(sloth3d.py) -> 축소 + 마젠타 평탄화 -> frames/.
 
-사용법:  python build_frames_3d.py [sloth|giraffe|monkey|flamingo]      # 렌더 + 변환 (Blender 5.x, Pillow 필요, 생략 시 둘 다)
+사용법:  python build_frames_3d.py [sloth|giraffe|monkey|flamingo|panda]      # 렌더 + 변환 (Blender 5.x, Pillow 필요, 생략 시 둘 다)
          python build_frames_3d.py ... --no-render       # 이미 렌더된 render3d*/ 로 변환만
 기린 친구(giraffe3d.py)는 frames/giraffe_{clip}_NN.png (서있는 클립만, 누운 자세 없음).
 
@@ -24,6 +24,7 @@ CHARS = {
     "giraffe": ("giraffe3d.py", "render3d_giraffe", "giraffe_", False, 210, 240),   # 긴 목만큼 키·캔버스를 키움 (몸 크기는 늘보와 비슷)
     "monkey": ("monkey3d.py", "render3d_monkey", "monkey_", False, 147, 188),       # 늘보보다 조금 작은 꼬마 (하트 앞머리 포함 키)
     "flamingo": ("flamingo3d.py", "render3d_flamingo", "flamingo_", False, 199, 228),   # 긴 다리+긴 S자 목이라 키 크게
+    "panda": ("panda3d.py", "render3d_panda", "panda_", False, 140, 188),           # 통통한 꼬마 판다
 }
 OUTDIR = os.path.join(HERE, "frames")
 OUTDIR_BIG = os.path.join(HERE, "frames_big")   # 거대 늘보(F9)용 2배 해상도 (확대 대신 촘촘한 도트)

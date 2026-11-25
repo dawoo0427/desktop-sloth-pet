@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-데스크탑 펫 (Desktop Pet) - 나무늘보
+데스크탑 동물원 (Desktop Zoo) - 나무늘보와 친구들(기린·원숭이·플라밍고·판다)
 - 캐릭터: 기분별 애니메이션 클립(frames/{clip}_*.png) — 눈 깜빡/통통/놀람/갸웃
 - 평소: 화면(모든 모니터)을 랜덤으로 느긋하게 배회
 - 키: F2=마우스 따라오기 토글 / F3=제자리 정지 토글 / F4=현재 위치 날씨 알려주기
@@ -87,7 +87,7 @@ WEATHER_CODES = {
 def _get_json(url, timeout=6):
     import urllib.request
     import json
-    req = urllib.request.Request(url, headers={"User-Agent": "desktop-sloth-pet"})
+    req = urllib.request.Request(url, headers={"User-Agent": "desktop-zoo"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
@@ -182,7 +182,7 @@ def fetch_weather(loc=None):
     url = ("https://api.open-meteo.com/v1/forecast"
            f"?latitude={lat}&longitude={lon}&current_weather=true&timezone=auto")
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "desktop-sloth-pet"})
+        req = urllib.request.Request(url, headers={"User-Agent": "desktop-zoo"})
         with urllib.request.urlopen(req, timeout=6) as r:
             data = json.load(r)
         cw = data["current_weather"]
@@ -225,10 +225,15 @@ def _app_dir():
 
 
 def _config_dir():
-    """항상 쓰기 가능한 사용자 설정 폴더(%APPDATA%\\DesktopSlothPet). 키 저장용."""
+    """항상 쓰기 가능한 사용자 설정 폴더(%APPDATA%\\DesktopZoo). 키 저장용.
+    예전 이름(DesktopSlothPet) 폴더가 있으면 처음 한 번 그대로 복사해 와서 키·설정을 이어 씀."""
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    d = os.path.join(base, "DesktopSlothPet")
+    d = os.path.join(base, "DesktopZoo")
+    old = os.path.join(base, "DesktopSlothPet")
     try:
+        if not os.path.exists(d) and os.path.isdir(old):
+            import shutil
+            shutil.copytree(old, d)
         os.makedirs(d, exist_ok=True)
     except Exception:
         pass
@@ -236,9 +241,9 @@ def _config_dir():
 
 
 def load_settings():
-    """보이기 설정 등 (%APPDATA%\\DesktopSlothPet\\settings.json). 없거나 깨지면 기본값."""
+    """보이기 설정 등 (%APPDATA%\\DesktopZoo\\settings.json). 없거나 깨지면 기본값."""
     import json
-    st = {"show_sloth": True, "show_giraffe": True, "show_monkey": True, "show_flamingo": True}
+    st = {"show_sloth": True, "show_giraffe": True, "show_monkey": True, "show_flamingo": True, "show_panda": True}
     try:
         with open(os.path.join(_config_dir(), "settings.json"), encoding="utf-8") as f:
             st.update(json.load(f))
@@ -763,11 +768,12 @@ class GiantSloth:
 
 
 # 늘 늘보 곁에 같이 나오는 친구들: (이름, 메뉴 이름, 처음 위치 = 늘보 중심에서 가로 거리)
-FRIENDS = (("giraffe", "기린 친구", 190), ("monkey", "원숭이 친구", -190), ("flamingo", "플라밍고 친구", 380))
+FRIENDS = (("giraffe", "기린 친구", 190), ("monkey", "원숭이 친구", -190), ("flamingo", "플라밍고 친구", 380),
+           ("panda", "판다 친구", -380))
 
 
 class Friend(GiantSloth):
-    """늘 늘보 곁에 같이 나오는 친구 (기린/원숭이/플라밍고, frames/{kind}_*.png).
+    """늘 늘보 곁에 같이 나오는 친구 (기린/원숭이/플라밍고/판다, frames/{kind}_*.png).
     거대 늘보 창 동작(배회·따라오기·기분별 모션·혼잣말)을 그대로 쓰되 항상 서 있음.
     우클릭은 보내기 대신 메인 메뉴."""
 
@@ -875,7 +881,7 @@ class Pet:
 
         # 중복 실행 인스턴스끼리 위치를 공유(겹침 방지). temp 폴더에 pid별 파일.
         self.pid = os.getpid()
-        self.share_dir = os.path.join(tempfile.gettempdir(), "desktop_sloth_pets")
+        self.share_dir = os.path.join(tempfile.gettempdir(), "desktop_zoo_pets")
         try:
             os.makedirs(self.share_dir, exist_ok=True)
         except Exception:
@@ -1548,5 +1554,5 @@ class Pet:
 
 
 if __name__ == "__main__":
-    print("데스크탑 펫 실행 중... 마우스를 움직여보세요! (우클릭 -> 종료)")
+    print("데스크탑 동물원 실행 중... 마우스를 움직여보세요! (우클릭 -> 종료)")
     Pet()
