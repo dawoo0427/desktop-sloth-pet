@@ -298,15 +298,22 @@ for side, sx in (("L", 1), ("R", -1)):
            (0.1, 0.11, 0.07), M["hoof"], sh, rot=(0, math.radians(-10 * sx), 0))
     shoulders[side] = sh
 
-# 목 (몸에 붙어 있음) + 뒤쪽 갈기. NECK_DZ 만큼 목이 길어지고 머리가 올라감 (보이는 목 길이 약 2배)
-NECK_DZ = 0.3
-NC, NS = Vector((0, 0.02, 1.28 + NECK_DZ / 2)), Vector((0.18, 0.17, 0.36 + NECK_DZ / 2))
-sphere("neck", NC, NS, M["fur"], root)
+# 목 (몸에 붙어 있음) + 뒤쪽 갈기. NECK_DZ 만큼 목이 길어지고 머리가 올라감
+NECK_DZ = 0.8      # 2026-11-25: 0.3 -> 0.8 (보이는 목 약 2배 더)
+# 곧은 원기둥 목 (양옆이 11자로 평행). 아래는 몸 속, 위는 머리 속에 묻힘
+NR, NZ0, NZ1 = 0.16, 1.0, 1.55 + NECK_DZ
+bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=NR, depth=NZ1 - NZ0, location=(0, 0.02, (NZ0 + NZ1) / 2))
+_neck = bpy.context.active_object
+_neck.name = "neck"
+finish(_neck, M["fur"], root, OUTLINE, 0.03, subsurf=0)
+NC, NS = Vector((0, 0.02, 0)), Vector((NR, NR, 100))     # 무늬 배치용: 원기둥 표면 = z 무관한 타원
 spot("nspot0", NC, NS, -0.08, 1.15, 0.075, root, -0.4)
 spot("nspot1", NC, NS, 0.07, 1.36, 0.08, root, 0.5)
 spot("nspot2", NC, NS, -0.06, 1.58, 0.07, root, 0.2)
-for i in range(6):
-    sphere(f"mane{i}", (0, 0.16, 1.12 + i * (0.42 + NECK_DZ) / 5), (0.05, 0.06, 0.08), M["mane"], root)
+spot("nspot3", NC, NS, 0.06, 1.82, 0.075, root, -0.3)
+spot("nspot4", NC, NS, -0.05, 2.05, 0.065, root, 0.6)
+for i in range(9):
+    sphere(f"mane{i}", (0, 0.16, 1.12 + i * (0.42 + NECK_DZ) / 8), (0.05, 0.06, 0.08), M["mane"], root)
 
 head = empty("head", (0, 0, 1.52), root)
 HC, HS = Vector((0, 0, 1.92)), Vector((0.56, 0.48, 0.47))
@@ -424,14 +431,14 @@ sun("key", (50, 0, -30), 1.7, (1.0, 0.97, 0.92))
 sun("fill", (70, 0, 50), 0.5, (0.9, 0.95, 1.0))
 sun("rim", (-60, 0, 160), 1.5)
 
-target = empty("target", (0, 0, 1.45))
+target = empty("target", (0, 0, 1.7))
 cam_d = bpy.data.cameras.new("cam")
 cam_d.type = "ORTHO"
-cam_d.ortho_scale = 3.9
+cam_d.ortho_scale = 4.4
 cam = bpy.data.objects.new("cam", cam_d)
 bpy.context.collection.objects.link(cam)
 YAW, EL, DIST = math.radians(0), math.radians(7), 12
-cam.location = (DIST * math.sin(YAW) * math.cos(EL) * -1, -DIST * math.cos(YAW) * math.cos(EL), 1.45 + DIST * math.sin(EL))
+cam.location = (DIST * math.sin(YAW) * math.cos(EL) * -1, -DIST * math.cos(YAW) * math.cos(EL), 1.7 + DIST * math.sin(EL))
 tc = cam.constraints.new("TRACK_TO")
 tc.target = target
 tc.track_axis = "TRACK_NEGATIVE_Z"

@@ -238,7 +238,7 @@ def _config_dir():
 def load_settings():
     """보이기 설정 등 (%APPDATA%\\DesktopSlothPet\\settings.json). 없거나 깨지면 기본값."""
     import json
-    st = {"show_sloth": True, "show_giraffe": True}
+    st = {"show_sloth": True, "show_giraffe": True, "show_monkey": True, "show_flamingo": True}
     try:
         with open(os.path.join(_config_dir(), "settings.json"), encoding="utf-8") as f:
             st.update(json.load(f))
@@ -722,6 +722,8 @@ class GiantSloth:
                 self.win.geometry(f"+{int(self.x)}+{int(self.y)}")
             if self.mood_timer > 0:
                 self.mood_timer -= 1
+                if self.mood_timer == 0 and self.mood == "happy":
+                    self.set_mood("idle")       # 클릭 기쁨(만세) 끝 -> 평소로 (안 하면 계속 흔듦)
             if not self.dragging and not self.lying and not app.frozen:
                 # 일어서 있을 때만 이동 + 일반 나무늘보와 똑같은 기분별 모션
                 if app.follow_on:
@@ -760,34 +762,38 @@ class GiantSloth:
         self._draw()
 
 
-class GiraffeFriend(GiantSloth):
-    """늘 늘보 곁에 같이 나오는 기린 친구 (늘보와 같은 크기, frames/giraffe_*.png).
+# 늘 늘보 곁에 같이 나오는 친구들: (이름, 메뉴 이름, 처음 위치 = 늘보 중심에서 가로 거리)
+FRIENDS = (("giraffe", "기린 친구", 190), ("monkey", "원숭이 친구", -190), ("flamingo", "플라밍고 친구", 380))
+
+
+class Friend(GiantSloth):
+    """늘 늘보 곁에 같이 나오는 친구 (기린/원숭이/플라밍고, frames/{kind}_*.png).
     거대 늘보 창 동작(배회·따라오기·기분별 모션·혼잣말)을 그대로 쓰되 항상 서 있음.
     우클릭은 보내기 대신 메인 메뉴."""
 
     BUBBLE_H = 70
 
-    def __init__(self, app):
+    def __init__(self, app, clips, dx):
+        self.clips = clips
         super().__init__(app, 0)
         self.lying = False
         self.canvas.bind("<Button-3>", app.on_right)
-        # 처음 위치: 늘보 오른쪽 옆, 발 높이 맞춤
-        self.x = app.x + app.W / 2 + 40
+        # 처음 위치: 늘보 옆(dx), 발 높이 맞춤
+        self.x = app.x + app.W / 2 + dx - self.win_w / 2
         self.y = app.y + app.H - self.win_h
         self.x = max(app.vsx, min(app.vsx + app.vsw - self.win_w, self.x))
         self._relayout()
         self._draw()
 
     def _stand_clip(self):
-        clips = self.app.giraffe_clips
-        return clips.get(self.mood) or clips["idle"]
+        return self.clips.get(self.mood) or self.clips["idle"]
 
     def _cur_img(self):
         fr = self._stand_clip()
         return fr[int(self.fphase) % len(fr)]
 
     def _content_size(self):
-        img = self.app.giraffe_clips["idle"][0]
+        img = self.clips["idle"][0]
         return img.width(), img.height()
 
     def _relayout(self):
@@ -838,12 +844,16 @@ class Pet:
         self.giant_sleep_frames = None   # 누운 숨쉬기 zoom 캐시
         self.giant_clips = None          # 서있는 기분별 클립(idle/happy/startled/curious) zoom 캐시
         self.giants = []                 # 소환된 거대 나무늘보(독립 창)들
-        # 기린 친구 프레임 frames/giraffe_{clip}_*.png (없으면 기린 없이 실행)
-        self.giraffe_clips = {}
-        for name in ("idle", "happy", "startled", "curious"):
-            cf = sorted(glob.glob(os.path.join(here, FRAME_DIR, f"giraffe_{name}_*.png")))
-            if cf:
-                self.giraffe_clips[name] = [tk.PhotoImage(file=f) for f in cf]
+        # 친구 프레임 frames/{kind}_{clip}_*.png (없는 친구는 빼고 실행)
+        self.friend_clips = {}
+        for kind, _, _ in FRIENDS:
+            clips = {}
+            for name in ("idle", "happy", "startled", "curious"):
+                cf = sorted(glob.glob(os.path.join(here, FRAME_DIR, f"{kind}_{name}_*.png")))
+                if cf:
+                    clips[name] = [tk.PhotoImage(file=f) for f in cf]
+            if "idle" in clips:
+                self.friend_clips[kind] = clips
 
         # 창 크기: 말풍선이 안 잘리게 가로를 넉넉히(캐릭터는 가운데 정렬), 위쪽은 말풍선 공간
         self.W = max(self.fw, 360)
@@ -940,13 +950,14 @@ class Pet:
         self.menu.add_separator()
         # 캐릭터 개별 보이기/숨기기 (설정은 다음 실행에도 유지)
         st = load_settings()
-        self.show_sloth = tk.BooleanVar(value=bool(st["show_sloth"]))
-        self.show_giraffe = tk.BooleanVar(value=bool(st["show_giraffe"]))
-        self.menu.add_checkbutton(label="나무늘보 보이기", variable=self.show_sloth,
+        self.show = {k: tk.BooleanVar(value=bool(st.get(f"show_{k}", True)))
+                     for k in ["sloth"] + [f[0] for f in FRIENDS]}
+        self.menu.add_checkbutton(label="나무늘보 보이기", variable=self.show["sloth"],
                                   command=lambda: self._apply_visibility("sloth"))
-        self.menu.add_checkbutton(label="기린 친구 보이기", variable=self.show_giraffe,
-                                  command=lambda: self._apply_visibility("giraffe"),
-                                  state="normal" if "idle" in self.giraffe_clips else "disabled")
+        for kind, label, _ in FRIENDS:
+            self.menu.add_checkbutton(label=f"{label} 보이기", variable=self.show[kind],
+                                      command=lambda k=kind: self._apply_visibility(k),
+                                      state="normal" if kind in self.friend_clips else "disabled")
         self.menu.add_separator()
         # 단축키 안내(클릭 불가, 보기용)
         self.menu.add_command(label="단축키", state="disabled")
@@ -960,7 +971,8 @@ class Pet:
         self.menu.add_command(label="안녕! 종료하기", command=self.root.destroy)
 
         # 기린 친구는 늘 같이 등장
-        self.friends = [GiraffeFriend(self)] if "idle" in self.giraffe_clips else []
+        self.friends = {kind: Friend(self, self.friend_clips[kind], dx)
+                        for kind, _, dx in FRIENDS if kind in self.friend_clips}
         self._apply_visibility()
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -1030,22 +1042,21 @@ class Pet:
         self.menu.tk_popup(e.x_root, e.y_root)
 
     def _apply_visibility(self, changed=None):
-        """늘보/기린 창 보이기·숨기기. 둘 다 숨기면 우클릭할 곳이 없어지므로 마지막 하나는 못 끔."""
-        has_giraffe = bool(self.friends)
-        if not self.show_sloth.get() and not (self.show_giraffe.get() and has_giraffe):
-            (self.show_giraffe if changed == "giraffe" else self.show_sloth).set(True)
-            self.say(text="둘 다 숨으면 못 찾아! 한 명은 남겨둘게~")
-        if self.show_sloth.get():
+        """늘보/친구 창 보이기·숨기기. 모두 숨기면 우클릭할 곳이 없어지므로 마지막 하나는 못 끔."""
+        if not self.show["sloth"].get() and not any(self.show[k].get() for k in self.friends):
+            self.show[changed if changed in self.friends else "sloth"].set(True)
+            self.say(text="다 숨으면 못 찾아! 한 명은 남겨둘게~")
+        if self.show["sloth"].get():
             self.root.deiconify()
         else:
             self.root.withdraw()
-        for f in self.friends:
-            if self.show_giraffe.get():
+        for kind, f in self.friends.items():
+            if self.show[kind].get():
                 f.win.deiconify()
             else:
                 f.win.withdraw()
         if changed:
-            save_settings({"show_sloth": self.show_sloth.get(), "show_giraffe": self.show_giraffe.get()})
+            save_settings({f"show_{k}": v.get() for k, v in self.show.items()})
 
     # ---------- Gemini(구글 AI) 키 설정 ----------
     def set_gemini_key(self):
@@ -1271,6 +1282,8 @@ class Pet:
 
             if self.mood_timer > 0:
                 self.mood_timer -= 1
+                if self.mood_timer == 0 and self.mood == "happy":
+                    self.set_mood("idle")       # 클릭 기쁨(만세) 끝 -> 평소로 (안 하면 계속 흔듦)
 
             # 날씨 조회 결과가 도착하면 말풍선으로(스레드 -> 메인 루프)
             if self._weather_result is not None:
@@ -1302,7 +1315,7 @@ class Pet:
         self.fphase += 0.125 + energy * 0.425
 
         # 거대 나무늘보(독립 창)들 — 애니메이션 매 틱, 이동은 slow
-        for g in list(self.giants) + (self.friends if self.show_giraffe.get() else []):
+        for g in list(self.giants) + [f for k, f in self.friends.items() if self.show[k].get()]:
             g.update(slow)
 
         self.draw()
