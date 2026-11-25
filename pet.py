@@ -245,6 +245,8 @@ def load_settings():
     import json
     st = {"show_sloth": True, "show_giraffe": True, "show_monkey": True, "show_flamingo": True, "show_panda": True,
           "show_guineapig": True, "show_babsae": True, "show_capybara": True, "show_otter": True}
+    st.update({f"talk_{k}": True for k in ("sloth", "giraffe", "monkey", "flamingo", "panda",
+                                            "guineapig", "babsae", "capybara", "otter")})   # 말풍선 켜기
     try:
         with open(os.path.join(_config_dir(), "settings.json"), encoding="utf-8") as f:
             st.update(json.load(f))
@@ -553,6 +555,7 @@ class GiantSloth:
     """독립 창 거대 나무늘보. 메인 펫들과 공존, 같은 커맨드(F2=따라오기/F3=정지).
     - 누우면: 엎드려 팔베개 자는 모습(정지) + 'Zzz' 말풍선
     - 일어서면: 일반 나무늘보처럼 깜빡/이동 + 응원 말풍선"""
+    kind = "sloth"      # 말풍선 켜기/끄기 설정 키 (친구는 Pet 이 자기 종류로 바꿔 줌)
 
     BUBBLE_H = 60               # 말풍선용 위쪽 여백
 
@@ -632,7 +635,7 @@ class GiantSloth:
         c.delete("all")
         img = self._cur_img()
         c.create_image(self.win_w / 2, self.BUBBLE_H, image=img, anchor="n")
-        if self.say_timer > 0 and self.say_text:
+        if self.say_timer > 0 and self.say_text and self.app.talk[self.kind].get():
             draw_speech_bubble(c, self.win_w / 2, self.BUBBLE_H + self.ch * 0.14,
                                self.say_text, self.win_w)
 
@@ -966,6 +969,14 @@ class Pet:
             self.menu.add_checkbutton(label=f"{label} 보이기", variable=self.show[kind],
                                       command=lambda k=kind: self._apply_visibility(k),
                                       state="normal" if kind in self.friend_clips else "disabled")
+        # 동물별 말풍선 켜기/끄기 (하위 메뉴). 늘보는 끄면 혼잣말만 멈추고 질문 답·날씨 등 요청한 말은 보여줌
+        self.talk = {k: tk.BooleanVar(value=bool(st.get(f"talk_{k}", True))) for k in self.show}
+        talk_menu = tk.Menu(self.menu, tearoff=0)
+        talk_menu.add_checkbutton(label="나무늘보", variable=self.talk["sloth"], command=self._save_settings)
+        for kind, label, _ in FRIENDS:
+            talk_menu.add_checkbutton(label=label.replace(" 친구", ""), variable=self.talk[kind],
+                                      command=self._save_settings)
+        self.menu.add_cascade(label="말풍선 켜기/끄기", menu=talk_menu)
         self.menu.add_separator()
         # 단축키 안내(클릭 불가, 보기용)
         self.menu.add_command(label="단축키", state="disabled")
@@ -981,6 +992,8 @@ class Pet:
         # 기린 친구는 늘 같이 등장
         self.friends = {kind: Friend(self, self.friend_clips[kind], dx)
                         for kind, _, dx in FRIENDS if kind in self.friend_clips}
+        for kind, f in self.friends.items():
+            f.kind = kind
         self._apply_visibility()
 
         # 실행 직후 현재 위치 날씨를 한 번 인사처럼 알려줌(창 뜬 뒤 잠깐 후)
@@ -991,6 +1004,8 @@ class Pet:
 
     # ---------- 대사 (힘이 나는 좋은 말만! lines.py 가 상황 맞춰 조합) ----------
     def say(self, mood=None, text=None):
+        if text is None and not self.talk["sloth"].get():
+            return                      # 늘보 말풍선 끔: 혼잣말만 멈춤 (요청에 대한 답은 text 로 옴)
         if text is None:
             text = lines.compose(mood or self.mood, self.weather_cache)
         self.say_text = text
@@ -1064,7 +1079,12 @@ class Pet:
             else:
                 f.win.withdraw()
         if changed:
-            save_settings({f"show_{k}": v.get() for k, v in self.show.items()})
+            self._save_settings()
+
+    def _save_settings(self):
+        st = {f"show_{k}": v.get() for k, v in self.show.items()}
+        st.update({f"talk_{k}": v.get() for k, v in self.talk.items()})
+        save_settings(st)
 
     # ---------- Gemini(구글 AI) 키 설정 ----------
     def set_gemini_key(self):
@@ -1305,7 +1325,7 @@ class Pet:
                 self.say_cooldown -= 1
                 if self.say_cooldown <= 0 and self.mood in ("idle", "curious"):
                     fresh = self.weather_cache and (time.time() - self.weather_cache_time) < 1800
-                    if fresh and random.random() < 0.2:
+                    if fresh and random.random() < 0.2 and self.talk["sloth"].get():
                         self.say(text="지금 " + self.weather_cache)
                     else:
                         self.say("idle")
